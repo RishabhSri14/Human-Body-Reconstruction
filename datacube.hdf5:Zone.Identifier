@@ -1,0 +1,4 @@
+[ZoneTransfer]
+ZoneId=3
+ReferrerUrl=https://github.com/pmocz/volumerender-python/blob/main/datacube.hdf5
+HostUrl=https://raw.githubusercontent.com/pmocz/volumerender-python/main/datacube.hdf5
