@@ -22,18 +22,25 @@ def get_od(H,W, K,c2w) -> Tuple[torch.tensor,torch.tensor]:
     #    [0, fy, cy], 
     #    [0, 0, 1]]
     i,j=i.to(device),j.to(device)
+    # i1,j1=i.transpose(-1,-2),j.transpose(-1,-2)
     i = ((i - K[0,2]) / K[0,0] ).reshape(-1)
     j = ((j - K[1,2]) / K[1,1] ).reshape(-1)
     # transform to camera coordinates: ICW->CCW (only direction matters)
     dirs = torch.stack((i, -j, -torch.ones_like(i)), axis=-1)
-    # rays_d = dirs / np.linalg.norm(dirs, axis=-1, keepdims=True)
-    print("Time taking step 0")
-    rays_d=dirs@c2w[:3,:3]
+    print("i_1,j_1",i.shape,j.shape)
+    # rays_d = dirs / .linalg.norm(dirs, axis=-1, keepdims=True)
+    print("Time taking step 0::Dirs,",dirs.shape)
+    # rays_d = torch.sum(dirs[..., None, :] * c2w[:3, :3], dim=-1)
+    # rays_d=(c2w[:3,:3]@(dirs.T)).T
+    rays_d=(torch.linalg.inv(c2w[:3,:3])@dirs.T).T
+    print("rays_d shape",rays_d.shape)
     rays_o = (c2w[:3, 3:4].mT).expand((rays_d.shape[0]),-1)
+    # rays_o = (c2w[:3, 3:4].mT).expand(rays_d.shape)
     # transform to world coordinates
     # rays_d = torch.einsum('...ij,...j->...i', K, rays_d)
     # rays_o = torch.einsum('...ij,...j->...i', K, rays_o)
     return rays_o, rays_d/torch.norm(rays_d,dim=-1,keepdim=True)
+    # return rays_o, rays_d
 
 def strat_sampler(
         tn:torch.tensor,
@@ -66,8 +73,16 @@ def model(rays:torch.tensor)->torch.tensor:
     f = h5.File('datacube.hdf5', 'r')
     datacube = np.array(f['density'])
     datacube=torch.from_numpy(datacube).to(device)
-    model_out=torch.rand((rays.shape[0],rays.shape[1],4)).to(device)
-    print("MIN_MAXES:",rays.min(),rays.max())
+    print(torch.unique(datacube))
+    # print("t unique",torch.unique(rays.mean(dim=-1)))
+    model_out=torch.ones((rays.shape[0],rays.shape[1],4),device=device)
+    print(rays)
+    x=datacube[rays[...,0].long(),rays[...,1].long(),rays[...,2].long()]
+    r = 1.0*torch.exp( -(x - 9.0)**2/1.0 ) +  0.1*torch.exp( -(x - 3.0)**2/0.1 ) +  0.1*torch.exp( -(x - -3.0)**2/0.5 )
+    g = 1.0*torch.exp( -(x - 9.0)**2/1.0 ) +  1.0*torch.exp( -(x - 3.0)**2/0.1 ) +  0.1*torch.exp( -(x - -3.0)**2/0.5 )
+    b = 0.1*torch.exp( -(x - 9.0)**2/1.0 ) +  0.1*torch.exp( -(x - 3.0)**2/0.1 ) +  1.0*torch.exp( -(x - -3.0)**2/0.5 )
+    model_out[...,3]=x
+    model_out[...,:3]=torch.stack((r,g,b),dim=-1)
     return model_out
 
 def vol_render(
@@ -103,7 +118,7 @@ def vol_render(
     alpha=1-torch.exp(-prod)
     print("Shape:",T.shape,del_t.shape,alpha.shape,rgb.shape)
     C=torch.sum(T[:,:,None]*alpha[:,:,None]*rgb,dim=-2)
-    print(C.shape)
+    print("C_SHAPE:",C.shape)
     return C
 model_out=torch.rand((480,620,4))
 
@@ -111,13 +126,38 @@ model_out=torch.rand((480,620,4))
 # print(datacube.shape)
 device='cuda' if torch.cuda.is_available() else 'cpu'
 print("deivce:",device)
-H=480
-W=620
+H=256
+W=256
 
 K=torch.from_numpy(np.array([[1,0,0],[0,1,0],[0,0,1]])).to(device)
-c2w=torch.randint(5,(4,4)).to(torch.float32).to(device)
+# c2w=torch.randint(5,(4,4)).to(torch.float32).to(device)
+data = np.load('tiny_nerf_data.npz')
+images = data['images']
+poses = data['poses']
+focal = data['focal']
+K[0,0]=torch.tensor(focal)
+K[1,1]=torch.tensor(focal)
+K[0,2]=W/2
+K[1,2]=H/2
+print("CAMERA SHAPES:",images.shape,poses.shape,focal)
+c2w=torch.from_numpy(np.array([[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]],dtype=np.float32)).to(device)
+c2w=torch.tensor(poses[0,...],device=device)
+print("c2w:",c2w)
 rays_o, rays_d=get_od(H,W,K,c2w)
-C=vol_render(rays_o,rays_d,num_samples=100)
+origins=rays_o.cpu().numpy()
+dirs=rays_d.cpu().numpy()
+# ax = plt.figure(figsize=(12, 8)).add_subplot(projection='3d')
+# _ = ax.quiver(
+#   origins[..., 0].flatten(),
+#   origins[..., 1].flatten(),
+#   origins[..., 2].flatten(),
+#   dirs[..., 0].flatten(),
+#   dirs[..., 1].flatten(),
+#   dirs[..., 2].flatten(),normalize=True)
+# plt.show()
+print("MIN_MAX:",rays_d.min(),rays_d.max())
+C=vol_render(rays_o,rays_d,num_samples=100,far=50)
+print(C[0])
 C=C.reshape(H,W,3).cpu().numpy()
 plt.imshow(C)
 
