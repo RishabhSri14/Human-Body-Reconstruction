@@ -7,12 +7,13 @@ import numpy as np
 
 class PositionalEncoder(nn.Module):
     
-    def __init__(self, d_model, max_seq_len=10):
+    def __init__(self, d_model, num_freq=10):
         super(PositionalEncoder, self).__init__()
+        self.device='cuda' if torch.cuda.is_available() else 'cpu'
         self.d_model = d_model
-        self.max_seq_len = max_seq_len
-        self.pe = torch.zeros(d_model, max_seq_len,2)
-        self.sinus_in=torch.arange(0,max_seq_len,dtype=torch.int16)
+        self.max_seq_len = num_freq
+        # self.pe = torch.zeros(d_model, max_seq_len,2)
+        self.sinus_in=torch.arange(0,self.max_seq_len,dtype=torch.int8).to(self.device)
         self.sinus_in=self.sinus_in[None,None,:]
         print(self.sinus_in.shape)
         # for pos in range(max_seq_len):
@@ -22,13 +23,11 @@ class PositionalEncoder(nn.Module):
         # self.pe = self.pe.unsqueeze(0)
         
     def forward(self, x):
-        out=np.zeros((x.shape[0],x.shape[1],self.max_seq_len,2))
-        out[..., 0] = torch.sin(2*x.unsqueeze(-1)*self.sinus_in)
-        out[..., 1] = torch.cos(2*x.unsqueeze(-1)*self.sinus_in)
+        out=torch.zeros((x.shape[0],x.shape[1],self.max_seq_len,2)).to(self.device)
+        out[..., 0] = torch.sin(2*x.unsqueeze(-1)*self.sinus_in).to(self.device)
+        out[..., 1] = torch.cos(2*x.unsqueeze(-1)*self.sinus_in).to(self.device)
         # x = x + self.pe[:, :x.size(1)]
 
-        # return out.reshape(out.shape[:-1],-1)
-        print(out.shape[:-1]+(-1,))
         return out.reshape(out.shape[:-2]+(-1,))
 
 if __name__ == '__main__':
