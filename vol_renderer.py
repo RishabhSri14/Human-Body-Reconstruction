@@ -153,8 +153,8 @@ def strat_sampler(
     if device is None:
         device="cuda" if torch.cuda.is_available() else "cpu"
 
-    t=torch.linspace(tn,tf,num_samples).to(device)
-    t=t+(torch.rand_like(t)*(tf-tn)/num_samples).to(device)
+    t=torch.linspace(tn,tf,num_samples,device=device)
+    t=t+(torch.rand_like(t)*(tf-tn)/num_samples)
     return t
 
 # def model(rays:torch.tensor)->torch.tensor:
@@ -180,9 +180,7 @@ def strat_sampler(
 #     return model_out
 
 
-def get_rays(near,far,num_samples):
-    t=strat_sampler(near,far,num_samples)
-    rays=rays_o[:,None,:]+rays_d[:,None,:]*t[None,:,None]
+
 def vol_render(
         model:NeRF,
         rays_d:torch.Tensor,
@@ -205,6 +203,7 @@ def vol_render(
         t=strat_sampler(near,far,num_samples,device=device)
         # t=t[None,:,None]
     rays=rays_o[:,None,:]+rays_d[:,None,:]*t[None,:,None]
+    # print("RAYS_SHAPE:",rays[...,0].max(),rays[...,1].max(),rays[...,2].max(),rays[...,0].min(),rays[...,1].min(),rays[...,2].min())
     orig_shape=rays.shape
     # print("t_shape:",rays_o[:,None,:].shape)
     if Pos_encode is not None and Dir_encode is not None:
@@ -215,6 +214,14 @@ def vol_render(
         dirs=Dir_encode(dirs)
         rays=rays.reshape(rays.shape[0],-1)
         dirs=dirs.reshape(dirs.shape[0],-1)
+    elif Pos_encode is not None and Dir_encode is None:
+        rays=rays.reshape(-1,3)
+        dirs=rays_d[...,None,:].repeat(1,num_samples,1)
+        dirs=dirs.reshape(-1,3)
+        rays=Pos_encode(rays)
+    else:
+        print("ERROR: No positional encoding")
+        # return
     # else:
     #     print("SOMEHOW HERE!!")
     model_out=model(rays,dirs)
@@ -224,15 +231,67 @@ def vol_render(
 
     del_t=torch.zeros_like(t).to(device)
 
-    del_t[...,1:]=t[...,1:]-t[...,:-1]
+    del_t[...,:-1]=t[...,1:]-t[...,:-1]
+    # del_t[...,-1]=1e10
     del_t=del_t[None,:]
 
     prod=sigma*del_t
     T=torch.exp(-torch.cumsum(prod,axis=-1))
-    alpha=1-torch.exp(-prod)
+    alpha=1-torch.exp(-torch.nn.functional.relu(prod+torch.randn_like(prod)*0.001))
     C=torch.sum(T[:,:,None]*alpha[:,:,None]*rgb,dim=-2)
+
     return C
 
+def cumprod_exclusive(
+  tensor: torch.Tensor
+) -> torch.Tensor:
+  r"""
+  (Courtesy of https://github.com/krrish94/nerf-pytorch)
+  Mimick functionality of tf.math.cumprod(..., exclusive=True), as it isn't available in PyTorch.
+  Args:
+  tensor (torch.Tensor): Tensor whose cumprod (cumulative product, see `torch.cumprod`) along dim=-1
+    is to be computed.
+  Returns:
+  cumprod (torch.Tensor): cumprod of Tensor along dim=-1, mimiciking the functionality of
+    tf.math.cumprod(..., exclusive=True) (see `tf.math.cumprod` for details).
+  """
+
+  # Compute regular cumprod first (this is equivalent to `tf.math.cumprod(..., exclusive=False)`).
+  cumprod = torch.cumprod(tensor, -1)
+  # "Roll" the elements along dimension 'dim' by 1 element.
+  cumprod = torch.roll(cumprod, 1, -1)
+  # Replace the first element by "1" as this is what tf.cumprod(..., exclusive=True) does.
+  cumprod[..., 0] = 1.
+  
+  return cumprod
+
+def find_bounding_box(images,poses,near,far,focal,device=None):
+    if device is None:
+        device=poses.device
+    K=torch.from_numpy(np.array([[1,0,0],[0,1,0],[0,0,1]])).to(device)
+    for image,pose in zip(images,poses):
+        H,W=image.shape[:2]
+        K[0,0]=focal
+        K[1,1]=focal
+        K[0,2]=W/2
+        K[1,2]=H/2
+        rays_o, rays_d = get_od(H, W, K, pose)
+        t=strat_sampler(near,far,12,device=device)
+        rays=rays_o[:,None,:]+rays_d[:,None,:]*t[None,:,None]
+        rays=rays.reshape(-1,3)
+        min_bound=torch.ones(3,device=device)*(1e7)
+        max_bound=torch.ones(3,device=device)*(-1e7)
+
+        for i in range(3):
+            min_elem=torch.min(rays[:,i])
+            max_elem=torch.max(rays[:,i])
+            if min_bound[i]>min_elem:
+                min_bound[i]=min_elem
+            if max_bound[i]<max_elem:
+                max_bound[i]=max_elem
+    return max_bound,min_bound
+
+######################################################################
 def make_batch(
         in_rays:torch.Tensor,
         batch_size: int,
@@ -255,7 +314,6 @@ if __name__=="__main__":
     model=NeRF(d_input=3*num_freq*2,d_viewdirs=2*num_freq*2)
     model=model.to(device)
 
-
     data = np.load('tiny_nerf_data.npz')
     images = data['images']
     poses = data['poses']
@@ -265,7 +323,7 @@ if __name__=="__main__":
     train_pose=poses[:-1,...]
     test_pose=poses[-1:-2:-1,...]
     H,W,_=images.shape[1:]
-    print(images.shape,train_imgs.shape,test_imgs.shape)
+    # print(images.shape,train_imgs.shape,test_imgs.shape)
 
     K[0,0]=torch.tensor(focal)
     K[1,1]=torch.tensor(focal)

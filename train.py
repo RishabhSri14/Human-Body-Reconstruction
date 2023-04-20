@@ -39,7 +39,8 @@ scheduler=torch.optim.lr_scheduler.CosineAnnealingLR(optimizer,T_max=num_iters,e
 Loss=nn.MSELoss()
 loss=0
 i=0
-for i in tqdm(range(num_iters),desc=f"Train:{i}:{loss}"):
+pbar=tqdm(range(num_iters),desc=f"Train:{i}:{loss}")
+for i in pbar:
     optimizer.zero_grad()
     
     img_idxs=torch.randint(0,train_imgs.shape[0],(1,))
@@ -71,6 +72,7 @@ for i in tqdm(range(num_iters),desc=f"Train:{i}:{loss}"):
     loss.backward()
     optimizer.step()
     scheduler.step()
+    pbar.desc=f'Train:{i}:{loss}'
     if int(100*i/num_iters)%5==0 and np.ceil(100*i/num_iters)==np.floor(100*i/num_iters):
         with torch.no_grad():
             H,W,_=test_imgs.shape[1:]

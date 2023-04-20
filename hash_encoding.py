@@ -3,7 +3,7 @@ import torch.nn as nn
 import numpy as np
 
 class HashEncoder(nn.Module):
-    def __init__(self,N_max,N_min,L,E=0,T=2**14,F=2,dim=2,device=None):
+    def __init__(self,N_max,N_min,L,E=0,T=2**14,F=2,dim=2,mu=None,sigma=None,device=None):
         super().__init__()
         if device is None:
             device='cuda' if torch.cuda.is_available() else 'cpu'
@@ -17,8 +17,13 @@ class HashEncoder(nn.Module):
         self.T=T
         self.E=E
         self.dim=dim
+        self.sigma=1 if sigma is None else torch.from_numpy(sigma).to(self.device)
+        self.mu=0 if mu is None else mu
+        # self.mu=torch.tensor(self.mu).to(self.device)
+        # self.sigma=torch.tensor(self.sigma).to(self.device)
         for i in range(self.L):
             Embedding_list.append(nn.Embedding(T,F,sparse=True))
+            nn.init.uniform_(Embedding_list[-1].weight,a=-1e-4,b=1e-4)
         self.Embedding_list=(nn.ModuleList(Embedding_list))
     
     def hash_func(self,x:np.ndarray,T:torch.tensor):
@@ -82,7 +87,8 @@ class HashEncoder(nn.Module):
         y=torch.zeros(x.shape[0],self.F*self.L+self.E,device=self.device)
         for i in range(self.L):
             N_l=self.N_min*self.b**i
-            un_x=x*N_l
+            un_x=((x-self.mu)/self.sigma)*N_l
+            # print(un_x.shape,x.shape,self.mu.shape,self.sigma.shape)
             idxs=self.get_indices(un_x)
             idx_hash=self.hash_func(idxs,T=self.T)
             interp_vec=self.ninear_interpolation(un_x,(self.Embedding_list[i])(idx_hash))
