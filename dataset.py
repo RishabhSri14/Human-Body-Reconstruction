@@ -11,16 +11,19 @@ class NeRF_DATA(Dataset):
                  json_path,
                  transforms=None):
 
-        super.__init__()
+        super().__init__()
         assert os.path.exists(json_path), "The path {} does not exist".format(json_path)
         self.path=json_path
         with open(json_path, 'r') as f:
             self.data = json.load(f)
-        self.camera_angle_x = self.data['camera_angle_x']
+        self.camera_angle_x = torch.tensor(self.data['camera_angle_x'])
         self.dataset = self.data['frames']
         self.image_transforms = transforms
-        # print('\n\n', self.image_transforms, '\n')
+        filename = self.path[:self.path.rfind('/')]+self.dataset[0]['file_path'][self.dataset[0]['file_path'].find('.')+1:]+'.png'
 
+        self.H,self.W,_=cv2.imread(filename).shape
+        # print('\n\n', self.image_transforms, '\n')
+        self.focal=self.W/(2*torch.tan(self.camera_angle_x/2))
    
     def __len__(self):
         return len(self.dataset)

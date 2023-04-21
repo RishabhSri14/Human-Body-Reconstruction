@@ -121,12 +121,11 @@ def get_od(
     # rays_d=(c2w[:3,:3]@(dirs.T)).T
     if find_inv:
         mat=c2w[:3,:3]
-        rays_d=(torch.linalg.inv(c2w[:3,:3])@dirs.T).T
+        rays_d=(torch.linalg.inv(c2w[...,:3,:3])@dirs.mT).mT
     else:
         # print("DIRS_SHAPE:",dirs.shape)
-        rays_d=((c2w[:3,:3])@(dirs.T)).T
-        
-    rays_o = (c2w[:3, 3:4].mT).expand((rays_d.shape[0]),-1)
+        rays_d=((c2w[...,:3,:3])@(dirs.mT)).mT
+    rays_o = (c2w[...,:3, 3:4].mT).expand(-1,(rays_d.shape[1]),-1)
     # rays_o = (c2w[:3, 3:4].mT).expand(rays_d.shape)
     # transform to world coordinates
     # rays_d = torch.einsum('...ij,...j->...i', K, rays_d)
@@ -202,7 +201,7 @@ def vol_render(
     if t is None:
         t=strat_sampler(near,far,num_samples,device=device)
         # t=t[None,:,None]
-    rays=rays_o[:,None,:]+rays_d[:,None,:]*t[None,:,None]
+    rays=rays_o[...,None,:]+rays_d[...,None,:]*t[None,:,None]
     # print("RAYS_SHAPE:",rays[...,0].max(),rays[...,1].max(),rays[...,2].max(),rays[...,0].min(),rays[...,1].min(),rays[...,2].min())
     orig_shape=rays.shape
     # print("t_shape:",rays_o[:,None,:].shape)
@@ -265,30 +264,33 @@ def cumprod_exclusive(
   
   return cumprod
 
-def find_bounding_box(images,poses,near,far,focal,device=None):
+def find_bounding_box(data_loader,near,far,K,device=None):
     if device is None:
-        device=poses.device
-    K=torch.from_numpy(np.array([[1,0,0],[0,1,0],[0,0,1]])).to(device)
-    for image,pose in zip(images,poses):
-        H,W=image.shape[:2]
-        K[0,0]=focal
-        K[1,1]=focal
-        K[0,2]=W/2
-        K[1,2]=H/2
-        rays_o, rays_d = get_od(H, W, K, pose)
-        t=strat_sampler(near,far,12,device=device)
-        rays=rays_o[:,None,:]+rays_d[:,None,:]*t[None,:,None]
-        rays=rays.reshape(-1,3)
-        min_bound=torch.ones(3,device=device)*(1e7)
-        max_bound=torch.ones(3,device=device)*(-1e7)
+        device=K.device
+    # K[0,0]=focal
+    # K[1,1]=focal
+    W=2*K[0,2]
+    H=2*K[1,2]
+    # K=torch.from_numpy(np.array([[1,0,0],[0,1,0],[0,0,1]])).to(device)
+    with torch.no_grad():
+        for batch in data_loader:
+            # H,W=image.shape[:2]
+            img,pose,_=batch
+            pose=pose.to(device)
+            rays_o, rays_d = get_od(H, W, K, pose)
+            t=strat_sampler(near,far,12,device=device)
+            rays=rays_o[...,None,:]+rays_d[...,None,:]*t[None,:,None]
+            rays=rays.reshape(-1,3)
+            min_bound=torch.ones(3,device=device)*(1e7)
+            max_bound=torch.ones(3,device=device)*(-1e7)
 
-        for i in range(3):
-            min_elem=torch.min(rays[:,i])
-            max_elem=torch.max(rays[:,i])
-            if min_bound[i]>min_elem:
-                min_bound[i]=min_elem
-            if max_bound[i]<max_elem:
-                max_bound[i]=max_elem
+            for i in range(3):
+                min_elem=torch.min(rays[:,i])
+                max_elem=torch.max(rays[:,i])
+                if min_bound[i]>min_elem:
+                    min_bound[i]=min_elem
+                if max_bound[i]<max_elem:
+                    max_bound[i]=max_elem
     return max_bound,min_bound
 
 ######################################################################

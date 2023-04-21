@@ -27,34 +27,50 @@ K=torch.from_numpy(np.array([[1,0,0],[0,1,0],[0,0,1]])).to(device)
 num_freq=3
 
 num_epoch=args.num_epochs
-data = np.load('tiny_nerf_data.npz')
-images = (data['images'])
-poses = (data['poses'])
-focal = torch.from_numpy(data['focal'])
-train_imgs=torch.from_numpy(images[:-1,...])
-# test_imgs=torch.from_numpy(images[-1:-2:-1,...].copy())
-test_imgs=torch.from_numpy(images[101:102,...].copy())
-train_pose=torch.from_numpy(poses[:-1,...])
-# test_pose=torch.from_numpy(poses[-1:-2:-1,...].copy())
-test_pose=torch.from_numpy(poses[101:102,...].copy())
-# H,W,_=images.shape[1:]
+# data = np.load('tiny_nerf_data.npz')
+# images = (data['images'])
+# poses = (data['poses'])
+# focal = torch.from_numpy(data['focal'])
+# train_imgs=torch.from_numpy(images[:-1,...])
+# # test_imgs=torch.from_numpy(images[-1:-2:-1,...].copy())
+# test_imgs=torch.from_numpy(images[101:102,...].copy())
+# train_pose=torch.from_numpy(poses[:-1,...])
+# # test_pose=torch.from_numpy(poses[-1:-2:-1,...].copy())
+# test_pose=torch.from_numpy(poses[101:102,...].copy())
+# # H,W,_=images.shape[1:]
 #####################TEST#############################
-Ht,Wt,_=test_imgs.shape[1:]
-K_test=torch.from_numpy(np.array([[1,0,0],[0,1,0],[0,0,1]])).to(device)
-K_test[0,0]=focal
-K_test[1,1]=focal
-K_test[0,2]=Wt/2  
-K_test[1,2]=Ht/2
-c2w_test=test_pose.squeeze(0).to(device)
-rays_o, rays_d=get_od(Ht,Wt,K_test,c2w_test)
-test_loader=torch.utils.data.DataLoader(torch.utils.data.TensorDataset(rays_o.cpu(),rays_d.cpu()),batch_size=10000,shuffle=False,num_workers=4,pin_memory=True)
+# Ht,Wt,_=test_imgs.shape[1:]
+# K_test=torch.from_numpy(np.array([[1,0,0],[0,1,0],[0,0,1]])).to(device)
+# K_test[0,0]=focal
+# K_test[1,1]=focal
+# K_test[0,2]=Wt/2  
+# K_test[1,2]=Ht/2
+# c2w_test=test_pose.squeeze(0).to(device)
+# rays_o, rays_d=get_od(Ht,Wt,K_test,c2w_test)
+# test_loader=torch.utils.data.DataLoader(torch.utils.data.TensorDataset(rays_o.cpu(),rays_d.cpu()),batch_size=10000,shuffle=False,num_workers=4,pin_memory=True)
 
+#################Train DataLoader#####################
+pth_train='data/lego/transforms_train.json'
+train_data=NeRF_DATA(json_path=pth_train)
+train_loader_nerf=torch.utils.data.DataLoader(train_data,batch_size=2,shuffle=True,num_workers=2,pin_memory=True)
+train_data.focal
+K=torch.from_numpy(np.array([[1,0,0],[0,1,0],[0,0,1]])).to(device)
 
+K[0,0]=train_data.focal
+K[1,1]=train_data.focal
+K[0,2]=train_data.W/2
+K[1,2]=train_data.H/2
+H,W=train_data.H,train_data.W
+
+pth_test='data/lego/transforms_test.json'
+test_data=NeRF_DATA(json_path=pth_test)
+test_loader_nerf=torch.utils.data.DataLoader(test_data,batch_size=1,shuffle=True,num_workers=2,pin_memory=True)
+######################################################
 
 L=16
 F=2
 dir_encoder=PositionalEncoder(d_model=3,num_freq=num_freq)
-max_bound,min_bound=find_bounding_box(train_imgs,train_pose,near=2.0,far=6.0,focal=focal)
+max_bound,min_bound=find_bounding_box(train_loader_nerf,near=2.0,far=6.0,K=K)
 print("BOUNDING BOX:",max_bound,min_bound)
 mu=min_bound.to(device)
 
@@ -97,12 +113,11 @@ write_img=args.write
 nerf.train()
 encoder.train()
 n_imgs=3
-K=torch.from_numpy(np.array([[1,0,0],[0,1,0],[0,0,1]])).to(device)
 
-pbar= tqdm(range(num_epoch),desc=f"Train:{i}:{loss}")
+pbar= tqdm(enumerate(train_loader_nerf),desc=f"Train:{i}:{loss}")
 # NOTE Mixed Precision Scaler Here
 scaler=torch.cuda.amp.GradScaler()
-for i in pbar:
+for i,batch in pbar:
     # rays_o=torch.tensor([],device=device)
     # rays_d=torch.tensor([],device=device)
     # gt=torch.tensor([],device=device)
@@ -123,19 +138,18 @@ for i in pbar:
     #     rays_o=torch.cat((rays_o,rays_ot),dim=0)
     #     rays_d=torch.cat((rays_d,rays_dt),dim=0)
     t1=time.time()
-    img_idxs=torch.randint(0,train_imgs.shape[0],(1,))
-    image=train_imgs[img_idxs]
-    pose=train_pose[img_idxs].squeeze(0)
-    H,W,_=image.shape[1:]
-    K[0,0]=focal
-    K[1,1]=focal
-    K[0,2]=W/2
-    K[1,2]=H/2
-    c2w=pose.to(device)
+    # img_idxs=torch.randint(0,train_imgs.shape[0],(1,))
+    # image=train_imgs[img_idxs]
+    # pose=train_pose[img_idxs].squeeze(0)
+    # H,W,_=image.shape[1:]
+    image,c2w,_=batch
+    image=image.to(device)
+    c2w=c2w.to(device)
+    # c2w=pose.to(device)
     rays_o, rays_d=get_od(H,W,K,c2w)
-    train_loader=torch.utils.data.DataLoader(torch.utils.data.TensorDataset(rays_o.cpu(),rays_d.cpu()),batch_size=10000,shuffle=False,num_workers=4,pin_memory=True)
-    gt=image.reshape(-1,3).to(device)
-    # rays_d=torch.dataloader(torch.data.TensorDataset(rays_d),batch_size=512,shuffle=True,num_workers=4,pin_memory=True)
+    rays_o,rays_d=rays_o.reshape(-1,3),rays_d.reshape(-1,3)
+    gts=image.reshape(-1,3).to(device)
+    train_loader=torch.utils.data.DataLoader(torch.utils.data.TensorDataset(rays_o.cpu(),rays_d.cpu(),gts.cpu()),batch_size=15000,shuffle=True,num_workers=4,pin_memory=True)
     # rays_o_batch=make_batch(rays_o,batch_size=256)
     # rays_d_batch=make_batch(rays_d,batch_size=256)
     t1=time.time()-t1
@@ -143,17 +157,18 @@ for i in pbar:
     t21=time.time()
     pred=torch.zeros(H*W,3,device=device)
     prev_len=0
-    with torch.cuda.amp.autocast():
-        for ray_o,ray_d in train_loader:
-            ray_o=ray_o.to(device)
-            ray_d=ray_d.to(device)
-            C=vol_render(nerf,ray_d,ray_o,near=2.,far=6.,num_samples=80,Pos_encode=encoder,Dir_encode=dir_encoder)
+    for ray_o,ray_d,gt in tqdm(train_loader):
+        ray_o=ray_o.to(device)
+        ray_d=ray_d.to(device)
+        gt=gt.to(device)
+        with torch.cuda.amp.autocast():
+            C=vol_render(nerf,ray_d,ray_o,near=2.,far=6.,num_samples=32,Pos_encode=encoder,Dir_encode=dir_encoder)
+            loss=criterion(C,gt)/len(train_loader)
+        scaler.scale(loss).backward()
             # Color.append(C)
-            pred[prev_len:prev_len+C.shape[0]]=C
-            prev_len=C.shape[0]
-        loss=criterion(pred,gt)
+        # pred[prev_len:prev_len+C.shape[0]]=C
+        # prev_len=C.shape[0]
     # loss.backward()
-    scaler.scale(loss).backward()
     t21=time.time()-t21
     t22=time.time()
     # optimizer_embed.step()

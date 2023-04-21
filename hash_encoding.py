@@ -17,7 +17,7 @@ class HashEncoder(nn.Module):
         self.T=T
         self.E=E
         self.dim=dim
-        self.sigma=1 if sigma is None else torch.from_numpy(sigma).to(self.device)
+        self.sigma=1 if sigma is None else (sigma).to(self.device)
         self.mu=0 if mu is None else mu
         # self.mu=torch.tensor(self.mu).to(self.device)
         # self.sigma=torch.tensor(self.sigma).to(self.device)
