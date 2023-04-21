@@ -4,3 +4,7 @@
 *.npz
 /data
 /results
+/__pycache__
+/*.pth
+*.Identifier
+Nerf.txt
