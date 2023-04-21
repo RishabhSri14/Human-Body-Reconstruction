@@ -1,3 +1,9 @@
 *.hdf5
 *.png
 *.jpg
+/data
+*.pth
+/__pycache__
+*.npz
+Nerf.txt
+*.Identifier
