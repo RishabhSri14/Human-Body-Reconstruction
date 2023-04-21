@@ -12,10 +12,13 @@ from test_hash import *
 from tqdm import tqdm
 import time
 import argparse
+from dataset import NeRF_DATA
 
 parser = argparse.ArgumentParser(description='Train Hashing')
 parser.add_argument('--display',action='store_true',help='Display the output')
+parser.add_argument('--compile',action='store_true',help='Use torch.compile(), might speed up')
 parser.add_argument('--write',action='store_true',help='Write the output')
+parser.add_argument('--num_epochs',type=int,default=1000,help='Number of epochs')
 # print(datacube.shape)
 args=parser.parse_args()
 device='cuda' if torch.cuda.is_available() else 'cpu'
@@ -23,7 +26,7 @@ print("deivce:",device)
 K=torch.from_numpy(np.array([[1,0,0],[0,1,0],[0,0,1]])).to(device)
 num_freq=3
 
-num_epoch=10000
+num_epoch=args.num_epochs
 data = np.load('tiny_nerf_data.npz')
 images = (data['images'])
 poses = (data['poses'])
@@ -46,7 +49,7 @@ c2w_test=test_pose.squeeze(0).to(device)
 rays_o, rays_d=get_od(Ht,Wt,K_test,c2w_test)
 test_loader=torch.utils.data.DataLoader(torch.utils.data.TensorDataset(rays_o.cpu(),rays_d.cpu()),batch_size=10000,shuffle=False,num_workers=4,pin_memory=True)
 
-######################################################
+
 
 L=16
 F=2
@@ -54,12 +57,17 @@ dir_encoder=PositionalEncoder(d_model=3,num_freq=num_freq)
 max_bound,min_bound=find_bounding_box(train_imgs,train_pose,near=2.0,far=6.0,focal=focal)
 print("BOUNDING BOX:",max_bound,min_bound)
 mu=min_bound.to(device)
-sigma=((max_bound-min_bound)**2).sum().sqrt().to(device)
+
+# sigma=((max_bound-min_bound)**2).sum().sqrt().to(device)
+sigma=(torch.abs(max_bound-min_bound))
 encoder=HashEncoder(N_min=16,N_max=2**14,L=L,F=F,T=2**20,dim=3,mu=mu,sigma=sigma)
 
 nerf=torch.nn.DataParallel(MLP_3D(num_sig=1,num_col=2,L=L,F=F,d_view=3*num_freq*2))
 nerf=nerf.to(device)
 encoder=encoder.to(device)
+if args.compile is True:
+    nerf=torch.compile(nerf,mode='reduce-overhead')
+# encoder=torch.compile(encoder,mode='max-autotune')
 
 optimizer_embed=torch.optim.SparseAdam(list(encoder.Embedding_list.parameters()),lr=0.2)
 optimizer_MLP=torch.optim.AdamW(nerf.parameters(),lr=0.2)
@@ -92,6 +100,8 @@ n_imgs=3
 K=torch.from_numpy(np.array([[1,0,0],[0,1,0],[0,0,1]])).to(device)
 
 pbar= tqdm(range(num_epoch),desc=f"Train:{i}:{loss}")
+# NOTE Mixed Precision Scaler Here
+scaler=torch.cuda.amp.GradScaler()
 for i in pbar:
     # rays_o=torch.tensor([],device=device)
     # rays_d=torch.tensor([],device=device)
@@ -133,23 +143,28 @@ for i in pbar:
     t21=time.time()
     pred=torch.zeros(H*W,3,device=device)
     prev_len=0
-    for ray_o,ray_d in train_loader:
-        ray_o=ray_o.to(device)
-        ray_d=ray_d.to(device)
-        C=vol_render(nerf,ray_d,ray_o,near=2.,far=6.,num_samples=80,Pos_encode=encoder,Dir_encode=dir_encoder)
-        # Color.append(C)
-        pred[prev_len:prev_len+C.shape[0]]=C
-        prev_len=C.shape[0]
-    loss=criterion(pred,gt)
-    loss.backward()
+    with torch.cuda.amp.autocast():
+        for ray_o,ray_d in train_loader:
+            ray_o=ray_o.to(device)
+            ray_d=ray_d.to(device)
+            C=vol_render(nerf,ray_d,ray_o,near=2.,far=6.,num_samples=80,Pos_encode=encoder,Dir_encode=dir_encoder)
+            # Color.append(C)
+            pred[prev_len:prev_len+C.shape[0]]=C
+            prev_len=C.shape[0]
+        loss=criterion(pred,gt)
+    # loss.backward()
+    scaler.scale(loss).backward()
     t21=time.time()-t21
     t22=time.time()
-    optimizer_embed.step()
-    optimizer_MLP.step()
+    # optimizer_embed.step()
+    # optimizer_MLP.step()
+    scaler.step(optimizer_embed)
+    scaler.step(optimizer_MLP)
     scheduler_embed.step()
     scheduler_MLP.step()
     optimizer_MLP.zero_grad(set_to_none=True)
     optimizer_embed.zero_grad(set_to_none=True)
+    scaler.update()
     # print("Time_2:",time.time()-t1)
     t22=time.time()-t22
     # if display==True :#and int(100*i/num_epoch)%1==0 and np.ceil(100*i/num_epoch)==np.floor(100*i/num_epoch):
