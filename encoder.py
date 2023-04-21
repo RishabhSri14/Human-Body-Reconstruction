@@ -15,7 +15,7 @@ class PositionalEncoder(nn.Module):
         # self.pe = torch.zeros(d_model, max_seq_len,2)
         self.sinus_in=torch.arange(0,self.max_seq_len,dtype=torch.int8).to(self.device)
         self.sinus_in=self.sinus_in[None,None,:]
-        print(self.sinus_in.shape)
+        print("DIR_ENCODE_INFO",self.sinus_in.shape,self.d_model,self.max_seq_len)
         # for pos in range(max_seq_len):
         #     for i in range(0, d_model, 2):
         #         self.pe[pos, i] = np.sin(pos / (10000 ** ((2 * i)/d_model)))
@@ -23,12 +23,14 @@ class PositionalEncoder(nn.Module):
         # self.pe = self.pe.unsqueeze(0)
         
     def forward(self, x):
-        out=torch.zeros((x.shape[0],x.shape[1],self.max_seq_len,2)).to(self.device)
-        out[..., 0] = torch.sin(2*x.unsqueeze(-1)*self.sinus_in).to(self.device)
-        out[..., 1] = torch.cos(2*x.unsqueeze(-1)*self.sinus_in).to(self.device)
+        # out=torch.zeros((x.shape[0],x.shape[1],self.max_seq_len,2)).to(self.device)
+        t1 = torch.sin(2*x.unsqueeze(-1)*self.sinus_in)
+        t2 = torch.cos(2*x.unsqueeze(-1)*self.sinus_in)
+        out=torch.cat([t1,t2],dim=-1)
         # x = x + self.pe[:, :x.size(1)]
-
+        # print(t1.shape,t2.shape)
         return out.reshape(out.shape[:-2]+(-1,))
+        # return torch.cat([t1,t2],dim=-1).reshape(out.shape[:-2]+(-1,))
 
 if __name__ == '__main__':
     # Define encoder

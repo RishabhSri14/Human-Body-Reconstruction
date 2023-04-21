@@ -19,6 +19,7 @@ parser.add_argument('--display',action='store_true',help='Display the output')
 parser.add_argument('--compile',action='store_true',help='Use torch.compile(), might speed up')
 parser.add_argument('--write',action='store_true',help='Write the output')
 parser.add_argument('--num_epochs',type=int,default=1000,help='Number of epochs')
+parser.add_argument('--num_batch',type=int,default=1000,help='Ray batch size')
 # print(datacube.shape)
 args=parser.parse_args()
 device='cuda' if torch.cuda.is_available() else 'cpu'
@@ -52,9 +53,9 @@ num_epoch=args.num_epochs
 #################Train DataLoader#####################
 pth_train='data/lego/transforms_train.json'
 train_data=NeRF_DATA(json_path=pth_train)
-train_loader_nerf=torch.utils.data.DataLoader(train_data,batch_size=2,shuffle=True,num_workers=2,pin_memory=True)
+train_loader_nerf=torch.utils.data.DataLoader(train_data,batch_size=10,shuffle=True,num_workers=4,pin_memory=True)
 train_data.focal
-K=torch.from_numpy(np.array([[1,0,0],[0,1,0],[0,0,1]])).to(device)
+K=torch.from_numpy(np.array([[1,0,0],[0,1,0],[0,0,1]]))
 
 K[0,0]=train_data.focal
 K[1,1]=train_data.focal
@@ -62,25 +63,39 @@ K[0,2]=train_data.W/2
 K[1,2]=train_data.H/2
 H,W=train_data.H,train_data.W
 
-pth_test='data/lego/transforms_test.json'
+pth_test='data/lego/transforms_tmp.json'
 test_data=NeRF_DATA(json_path=pth_test)
-test_loader_nerf=torch.utils.data.DataLoader(test_data,batch_size=1,shuffle=True,num_workers=2,pin_memory=True)
+test_loader_nerf=torch.utils.data.DataLoader(test_data,batch_size=1,shuffle=True,num_workers=4,pin_memory=True)
+
+
+# Ht,Wt,_=train_data[0][0].shape
+# K_test=torch.from_numpy(np.array([[1,0,0],[0,1,0],[0,0,1]])).to(device)
+# K_test[0,0]=train_data.focal
+# K_test[1,1]=train_data.focal
+# K_test[0,2]=train_data.W/2  
+# K_test[1,2]=train_data.H/2
+# c2w_test=train_data[50][1].unsqueeze(0).to(device)
+# rays_o, rays_d=get_od(train_data.H,train_data.W,K_test,c2w_test)
+# test_loader=torch.utils.data.DataLoader(torch.utils.data.TensorDataset(rays_o.unsqueeze(0).cpu(),rays_d),batch_size=1,shuffle=False,num_workers=4,pin_memory=True)
+
 ######################################################
 
 L=16
 F=2
-dir_encoder=PositionalEncoder(d_model=3,num_freq=num_freq)
 max_bound,min_bound=find_bounding_box(train_loader_nerf,near=2.0,far=6.0,K=K)
 print("BOUNDING BOX:",max_bound,min_bound)
 mu=min_bound.to(device)
 
 # sigma=((max_bound-min_bound)**2).sum().sqrt().to(device)
 sigma=(torch.abs(max_bound-min_bound))
-encoder=HashEncoder(N_min=16,N_max=2**14,L=L,F=F,T=2**20,dim=3,mu=mu,sigma=sigma)
+encoder=HashEncoder(N_min=16,N_max=2**10,L=L,F=F,T=2**16,dim=3,mu=mu,sigma=sigma)
+dir_encoder=PositionalEncoder(d_model=3,num_freq=num_freq)
+VolumeRenderer=Volume_Renderer(H=H,W=W,K=K,near=2.,far=6.,device=device,Pos_encode=encoder,Dir_encode=dir_encoder)
 
 nerf=torch.nn.DataParallel(MLP_3D(num_sig=1,num_col=2,L=L,F=F,d_view=3*num_freq*2))
 nerf=nerf.to(device)
 encoder=encoder.to(device)
+dir_encoder=dir_encoder.to(device)
 if args.compile is True:
     nerf=torch.compile(nerf,mode='reduce-overhead')
 # encoder=torch.compile(encoder,mode='max-autotune')
@@ -114,118 +129,137 @@ nerf.train()
 encoder.train()
 n_imgs=3
 
-pbar= tqdm(enumerate(train_loader_nerf),desc=f"Train:{i}:{loss}")
+pbar= tqdm(enumerate(train_loader_nerf),desc=f"Train:{i}:{loss}",total=len(train_loader_nerf))
 # NOTE Mixed Precision Scaler Here
 scaler=torch.cuda.amp.GradScaler()
-for i,batch in pbar:
-    # rays_o=torch.tensor([],device=device)
-    # rays_d=torch.tensor([],device=device)
-    # gt=torch.tensor([],device=device)
-    # for i in range(n_imgs):
-    #     img_idxs=torch.randint(0,train_imgs.shape[0],(1,))
-    #     image=train_imgs[img_idxs]
-    #     pose=train_pose[img_idxs].squeeze(0)
-    #     H,W,_=image.shape[1:]
-    #     K=torch.from_numpy(np.array([[1,0,0],[0,1,0],[0,0,1]])).to(device)
-    #     K[0,0]=focal
-    #     K[1,1]=focal
-    #     K[0,2]=W/2
-    #     K[1,2]=H/2
-    #     gt_t=image.reshape(-1,3).to(device)
-    #     gt=torch.cat((gt,gt_t),dim=0)
-    #     c2w=pose.to(device)
-    #     rays_ot, rays_dt=get_od(H,W,K,c2w)
-    #     rays_o=torch.cat((rays_o,rays_ot),dim=0)
-    #     rays_d=torch.cat((rays_d,rays_dt),dim=0)
-    t1=time.time()
-    # img_idxs=torch.randint(0,train_imgs.shape[0],(1,))
-    # image=train_imgs[img_idxs]
-    # pose=train_pose[img_idxs].squeeze(0)
-    # H,W,_=image.shape[1:]
-    image,c2w,_=batch
-    image=image.to(device)
-    c2w=c2w.to(device)
-    # c2w=pose.to(device)
-    rays_o, rays_d=get_od(H,W,K,c2w)
-    rays_o,rays_d=rays_o.reshape(-1,3),rays_d.reshape(-1,3)
-    gts=image.reshape(-1,3).to(device)
-    train_loader=torch.utils.data.DataLoader(torch.utils.data.TensorDataset(rays_o.cpu(),rays_d.cpu(),gts.cpu()),batch_size=15000,shuffle=True,num_workers=4,pin_memory=True)
-    # rays_o_batch=make_batch(rays_o,batch_size=256)
-    # rays_d_batch=make_batch(rays_d,batch_size=256)
-    t1=time.time()-t1
-    # for ray_o,ray_d in zip(rays_o_batch,rays_d_batch):
-    t21=time.time()
-    pred=torch.zeros(H*W,3,device=device)
-    prev_len=0
-    for ray_o,ray_d,gt in tqdm(train_loader):
-        ray_o=ray_o.to(device)
-        ray_d=ray_d.to(device)
-        gt=gt.to(device)
-        with torch.cuda.amp.autocast():
-            C=vol_render(nerf,ray_d,ray_o,near=2.,far=6.,num_samples=32,Pos_encode=encoder,Dir_encode=dir_encoder)
-            loss=criterion(C,gt)/len(train_loader)
-        scaler.scale(loss).backward()
-            # Color.append(C)
-        # pred[prev_len:prev_len+C.shape[0]]=C
-        # prev_len=C.shape[0]
-    # loss.backward()
-    t21=time.time()-t21
-    t22=time.time()
-    # optimizer_embed.step()
-    # optimizer_MLP.step()
-    scaler.step(optimizer_embed)
-    scaler.step(optimizer_MLP)
-    scheduler_embed.step()
-    scheduler_MLP.step()
-    optimizer_MLP.zero_grad(set_to_none=True)
-    optimizer_embed.zero_grad(set_to_none=True)
-    scaler.update()
-    # print("Time_2:",time.time()-t1)
-    t22=time.time()-t22
-    # if display==True :#and int(100*i/num_epoch)%1==0 and np.ceil(100*i/num_epoch)==np.floor(100*i/num_epoch):
-    #     img=pred.reshape(H,W,3)
-    #     img_np=img.detach().cpu().numpy()
-    #     cv2.imshow("Output",img_np[...,::-1])
-    #     key=cv2.waitKey(1)
-    #     if key==ord('q'):
-    #         exit(0)
-    t3=time.time()
-    if display==True:# and int(100*i/num_epoch)%1==0 and np.ceil(100*i/num_epoch)==np.floor(100*i/num_epoch):
-        with torch.no_grad():
-            # rays_o_batch=make_batch(rays_o,batch_size=100)
-            # rays_d_batch=make_batch(rays_d,batch_size=100)
-            pred=torch.zeros(H*W,3,device=device)
-            # for ray_o,ray_d in zip(rays_o_batch,rays_d_batch):
-            prev_len=0
-            for ray_o,ray_d in test_loader:
-                ray_o=ray_o.to(device)
-                ray_d=ray_d.to(device)
-                C=vol_render(nerf,ray_d,ray_o,near=2.,far=6.,num_samples=64,Pos_encode=encoder,Dir_encode=dir_encoder)
-                pred[prev_len:prev_len+C.shape[0]]=C
-                prev_len=C.shape[0]
-            # pred=torch.cat(Color,dim=0)
-            img=pred.reshape(H,W,3)
-            img_np=img.detach().cpu().numpy()
-            # img_out=(pred.reshape(H,W,3).detach().cpu().numpy())
-            cv2.imshow("Output",img_np[...,::-1])
-            key=cv2.waitKey(1)
-            if key==ord('q'):
-                exit(0)
-    if write_img==True and int(100*i/num_epoch)%5==0 and np.ceil(100*i/num_epoch)==np.floor(100*i/num_epoch):
-        with torch.no_grad():
-            Color=[]
-            for ray_o,ray_d in test_loader:
-                ray_o=ray_o.to(device)
-                ray_d=ray_d.to(device)
-                C=vol_render(nerf,ray_d,ray_o,near=2.,far=6.,num_samples=64,Pos_encode=encoder,Dir_encode=dir_encoder)
-                Color.append(C)
-                
-                pred=torch.cat(Color,dim=0)
+for epoch in num_epoch:
+    for i,batch in pbar:
+        # rays_o=torch.tensor([],device=device)
+        # rays_d=torch.tensor([],device=device)
+        # gt=torch.tensor([],device=device)
+        # for i in range(n_imgs):
+        #     img_idxs=torch.randint(0,train_imgs.shape[0],(1,))
+        #     image=train_imgs[img_idxs]
+        #     pose=train_pose[img_idxs].squeeze(0)
+        #     H,W,_=image.shape[1:]
+        #     K=torch.from_numpy(np.array([[1,0,0],[0,1,0],[0,0,1]])).to(device)
+        #     K[0,0]=focal
+        #     K[1,1]=focal
+        #     K[0,2]=W/2
+        #     K[1,2]=H/2
+        #     gt_t=image.reshape(-1,3).to(device)
+        #     gt=torch.cat((gt,gt_t),dim=0)
+        #     c2w=pose.to(device)
+        #     rays_ot, rays_dt=get_od(H,W,K,c2w)
+        #     rays_o=torch.cat((rays_o,rays_ot),dim=0)
+        #     rays_d=torch.cat((rays_d,rays_dt),dim=0)
+        t1=time.time()
+        # img_idxs=torch.randint(0,train_imgs.shape[0],(1,))
+        # image=train_imgs[img_idxs]
+        # pose=train_pose[img_idxs].squeeze(0)
+        # H,W,_=image.shape[1:]
+        image,c2w,_=batch
+        image=image
+        c2w=c2w
+        # c2w=pose.to(device)
+        rays_o, rays_d=get_od(H,W,K,c2w)
+        gts=image.reshape(-1,3)
+        rays_o,rays_d=rays_o.reshape(-1,3),rays_d.reshape(-1,3)
+        train_loader=torch.utils.data.DataLoader(torch.utils.data.TensorDataset(rays_o,rays_d,gts),batch_size=32000,shuffle=True,num_workers=8,pin_memory=True)
+        # rays_o_batch=make_batch(rays_o,batch_size=256)
+        # rays_d_batch=make_batch(rays_d,batch_size=256)
+        t1=time.time()-t1
+        # for ray_o,ray_d in zip(rays_o_batch,rays_d_batch):
+        t21=time.time()
+        
+        for ray_o,ray_d,gt in tqdm(train_loader):
+            ray_o=ray_o.to(device)
+            ray_d=ray_d.to(device)
+            gt=gt.to(device)
+            with torch.cuda.amp.autocast():
+                # C=vol_render(nerf,ray_d,ray_o,near=2.,far=6.,num_samples=32,Pos_encode=encoder,Dir_encode=dir_encoder)
+                C=VolumeRenderer.vol_render(nerf,ray_d,ray_o,num_samples=32)
+                t11=time.time()
+                loss=criterion(C,gt)/len(train_loader)
+                scaler.scale(loss).backward()
+                t11=time.time()-t11
+            # print("time:",t11)
+                # Color.append(C)
+            # pred[prev_len:prev_len+C.shape[0]]=C
+            # prev_len=C.shape[0]
+        # loss.backward()
+        t21=time.time()-t21
+        t22=time.time()
+        # optimizer_embed.step()
+        # optimizer_MLP.step()
+        scaler.step(optimizer_embed)
+        scaler.step(optimizer_MLP)
+        scheduler_embed.step()
+        scheduler_MLP.step()
+        optimizer_MLP.zero_grad(set_to_none=True)
+        optimizer_embed.zero_grad(set_to_none=True)
+        scaler.update()
+        # print("Time_2:",time.time()-t1)
+        t22=time.time()-t22
+        # if display==True :#and int(100*i/num_epoch)%1==0 and np.ceil(100*i/num_epoch)==np.floor(100*i/num_epoch):
+        #     img=pred.reshape(H,W,3)
+        #     img_np=img.detach().cpu().numpy()
+        #     cv2.imshow("Output",img_np[...,::-1])
+        #     key=cv2.waitKey(1)
+        #     if key==ord('q'):
+        #         exit(0)
+        t3=time.time()
+        if display==True:# and int(100*i/num_epoch)%1==0 and np.ceil(100*i/num_epoch)==np.floor(100*i/num_epoch):
+            with torch.no_grad():
+                # rays_o_batch=make_batch(rays_o,batch_size=100)
+                # rays_d_batch=make_batch(rays_d,batch_size=100)
+                pred=torch.zeros(H*W,3,device=device)
+                # for ray_o,ray_d in zip(rays_o_batch,rays_d_batch):
+                prev_len=0
+                for ray_o,ray_d in test_loader:
+                    ray_o=ray_o.to(device)
+                    ray_d=ray_d.to(device)
+                    # C=vol_render(nerf,ray_d,ray_o,near=2.,far=6.,num_samples=64,Pos_encode=encoder,Dir_encode=dir_encoder)
+                    C=VolumeRenderer.vol_render(nerf,ray_d,ray_o,num_samples=32)
+                    pred[prev_len:prev_len+C.shape[0]]=C
+                    prev_len=C.shape[0]
+                # pred=torch.cat(Color,dim=0)
                 img=pred.reshape(H,W,3)
                 img_np=img.detach().cpu().numpy()
-                cv2.imwrite(f'./results/hash{i}.png',((img_np[...,::-1]-img_np.min())/(img_np.max()-img_np.min())*255).astype(np.uint8))
+                # img_out=(pred.reshape(H,W,3).detach().cpu().numpy())
+                cv2.imshow("Output",img_np[...,::-1])
+                key=cv2.waitKey(1)
+                if key==ord('q'):
+                    exit(0)
+        prev_len=0
+        if write_img==True and int(100*i/num_epoch)%1==0 and np.ceil(100*i/num_epoch)==np.floor(100*i/num_epoch):
+            with torch.no_grad():
+                pred=torch.zeros(H*W,3,device=device)
+                print(len(test_loader_nerf))
+                for batch in test_loader_nerf:
+                    image,c2w,_=batch
+                    image=image
+                    c2w=c2w
+                    # c2w=pose.to(device)
+                    rays_o, rays_d=get_od(H,W,K,c2w)
+                    rays_o,rays_d=rays_o.reshape(-1,3),rays_d.reshape(-1,3)
+                    test_loader=torch.utils.data.DataLoader(torch.utils.data.TensorDataset(rays_o,rays_d),batch_size=32000,shuffle=False,num_workers=8,pin_memory=True)
+                    for ray_o, ray_d in tqdm(test_loader): 
+                        ray_o=ray_o.to(device)
+                        ray_d=ray_d.to(device)
+
+                        C=VolumeRenderer.vol_render(nerf,ray_d,ray_o,num_samples=32)
+                        pred[prev_len:prev_len+C.shape[0]]=C
+                        prev_len+=C.shape[0]
+                
+                img=pred.reshape(H,W,3)
+                img_np=img.detach().cpu().numpy()
+                cv2.imwrite(f'./results/hash_big{epoch}_{i}.png',((img_np[...,::-1]-img_np.min())/(img_np.max()-img_np.min())*255).astype(np.uint8))
                 # plt.imsave(f'./results/{i}.png',img_out)
                 torch.save(nerf.state_dict(),'Nerf_hash.pth')
+            torch.cuda.empty_cache()
+
+
     t3=time.time()-t3
     # print("time_3",time.time()-t1)
-    pbar.desc=f'Train:{i}:{loss}, Time:{t1:.2f}, Time_2:{t21:.2f},{t22:.2f}, Time_3:{t3:.2f}'
+    pbar.desc=f'Train:{i}:{loss}, Epoch:{epoch}'

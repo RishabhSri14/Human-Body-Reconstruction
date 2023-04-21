@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import numpy as np
-
+import time
 class HashEncoder(nn.Module):
     def __init__(self,N_max,N_min,L,E=0,T=2**14,F=2,dim=2,mu=None,sigma=None,device=None):
         super().__init__()
@@ -21,50 +21,84 @@ class HashEncoder(nn.Module):
         self.mu=0 if mu is None else mu
         # self.mu=torch.tensor(self.mu).to(self.device)
         # self.sigma=torch.tensor(self.sigma).to(self.device)
+        self.pis=torch.tensor(np.array([1, 2654435761,805459861],dtype=np.int32),device=self.device)
+        if self.dim==2:
+            self.pis=self.pis[None,:dim]
+        if self.dim==3:
+            self.pis=self.pis[None,None,:dim]
         for i in range(self.L):
             Embedding_list.append(nn.Embedding(T,F,sparse=True))
             nn.init.uniform_(Embedding_list[-1].weight,a=-1e-4,b=1e-4)
         self.Embedding_list=(nn.ModuleList(Embedding_list))
     
     def hash_func(self,x:np.ndarray,T:torch.tensor):
-        pis=torch.tensor(np.array([1, 2654435761,805459861],dtype=np.int32),device=self.device)
         # pis=torch.tensor(np.array([1, 2654435761,805459861],dtype=np.int32))
         ndims=self.dim
         if self.dim==2:
-            prod=x*pis[None,:ndims]
+            prod=x*self.pis
         if self.dim==3:
-            prod=x*pis[None,None,:ndims]
+            prod=x*self.pis
         val=torch.bitwise_xor(prod[...,0],prod[...,1])
         if ndims==3:
             val=torch.bitwise_xor(val,prod[...,2])
         val=val%T
+        # val=torch.fmod(val,T) <- Crashes
         return val
     
-    def get_indices(self,x:torch.tensor):
+    def get_indices(self,x:torch.tensor,out=None):
         x_val=torch.stack([torch.floor(x),torch.ceil(x)],dim=-1)
-        out=torch.zeros(x.shape[0],2**self.dim,self.dim,device=self.device)
-        for a in range(2):
-            for b in range(2):
-                if self.dim<3:
-                    # tensor=torch.stack([x_val[:,0,a],x_val[:,1,b]],dim=-1)
-                    # print("Tensor_shape:",tensor.shape,out[:,a*2+b,:].shape)
-                    out[:,a*2+b,:]=torch.stack([x_val[:,0,a],x_val[:,1,b]],dim=-1)
-                    continue
-                for c in range(2):
-                    # out[:,a*2+b*2+c]=x_l[:,a]
-                    # tensor=torch.stack([x_val[:,0,a],x_val[:,1,b],x_val[:,2,c]],dim=-1)
-                    # print("Tensor_shape:",tensor.shape)
-                    out[:,a*4+b*2+c,:]=torch.stack([x_val[:,0,a],x_val[:,1,b],x_val[:,2,c]],dim=-1)
+        if out is None:
+            out=torch.zeros(x.shape[0],2**self.dim,self.dim,device=self.device)
+        if self.dim==2:
+            out[:,0,0]=x_val[:,0,0]
+            out[:,0,1]=x_val[:,1,0]
+            out[:,1,0]=x_val[:,0,0]
+            out[:,1,1]=x_val[:,1,1]
+
+            out[:,2,0]=x_val[:,0,1]
+            out[:,2,1]=x_val[:,1,0]
+            out[:,3,0]=x_val[:,0,1]
+            out[:,3,1]=x_val[:,1,1]
+        if self.dim==3:
+            #a=0,b=0,c=0
+            out[:,0,0],out[:,0,1],out[:,0,2]=x_val[:,0,0],x_val[:,1,0],x_val[:,2,0]
+            #a=0,b=0,c=1
+            out[:,1,0],out[:,1,1],out[:,1,2]=x_val[:,0,0],x_val[:,1,0],x_val[:,2,1]
+            #a=0,b=1,c=0
+            out[:,2,0],out[:,2,1],out[:,2,2]=x_val[:,0,0],x_val[:,1,1],x_val[:,2,0]
+            #a=0,b=1,c=1
+            out[:,3,0],out[:,3,1],out[:,3,2]=x_val[:,0,0],x_val[:,1,1],x_val[:,2,1]
+            #a=1,b=0,c=0
+            out[:,4,0],out[:,4,1],out[:,4,2]=x_val[:,0,1],x_val[:,1,0],x_val[:,2,0]
+            #a=1,b=0,c=1
+            out[:,5,0],out[:,5,1],out[:,5,2]=x_val[:,0,1],x_val[:,1,0],x_val[:,2,1]
+            #a=1,b=1,c=0
+            out[:,6,0],out[:,6,1],out[:,6,2]=x_val[:,0,1],x_val[:,1,1],x_val[:,2,0]
+            #a=1,b=1,c=1
+            out[:,7,0],out[:,7,1],out[:,7,2]=x_val[:,0,1],x_val[:,1,1],x_val[:,2,1]
+
+        # for a in range(2):
+        #     for b in range(2):
+        #         if self.dim<3:
+        #             # tensor=torch.stack([x_val[:,0,a],x_val[:,1,b]],dim=-1)
+        #             # print("Tensor_shape:",tensor.shape,out[:,a*2+b,:].shape)
+        #             out[:,a*2+b,:]=torch.stack([x_val[:,0,a],x_val[:,1,b]],dim=-1)
+        #             continue
+        #         for c in range(2):
+        #             # out[:,a*2+b*2+c]=x_l[:,a]
+        #             # tensor=torch.stack([x_val[:,0,a],x_val[:,1,b],x_val[:,2,c]],dim=-1)
+        #             # print("Tensor_shape:",tensor.shape)
+        #             out[:,a*4+b*2+c,:]=torch.stack([x_val[:,0,a],x_val[:,1,b],x_val[:,2,c]],dim=-1)
 
         return out.long()
     
     def ninear_interpolation(self,x:torch.tensor,feature_vecs:torch.tensor):
-        x_val=torch.stack([torch.floor(x),torch.ceil(x)],dim=-1)
-        d=(x_val[...,1]-x_val[...,0])
-        idxs=d!=0
+        x_val=torch.stack([torch.floor(x),torch.ceil(x)],dim=-1).to(torch.long)
+        # d=(x_val[...,1]-x_val[...,0])
+        # idxs=d!=0
         diff=(x-x_val[...,0])
-        diff[idxs]=diff[idxs]/d[idxs]
-        diff[~idxs]=0
+        # diff[idxs]=diff[idxs]
+        # diff[~idxs]=0
         if self.dim==3:
             c00=feature_vecs[:,0]*(1-diff[...,0:1])+feature_vecs[:,4]*diff[...,0:1]
             c01=feature_vecs[:,1]*(1-diff[...,0:1])+feature_vecs[:,5]*diff[...,0:1]
@@ -85,12 +119,24 @@ class HashEncoder(nn.Module):
     def forward(self,x,aux=None):
         assert(x.shape[-1]==self.dim)
         y=torch.zeros(x.shape[0],self.F*self.L+self.E,device=self.device)
+        out=torch.zeros(x.shape[0],2**self.dim,self.dim,device=self.device)
+        # t1_sum,t2_sum,t3_sum=0,0,0
         for i in range(self.L):
             N_l=self.N_min*self.b**i
             un_x=((x-self.mu)/self.sigma)*N_l
             # print(un_x.shape,x.shape,self.mu.shape,self.sigma.shape)
-            idxs=self.get_indices(un_x)
+            # t1=time.time()
+            idxs=self.get_indices(un_x,out=out)
+            # t1=time.time()-t1
+            # t2=time.time()
             idx_hash=self.hash_func(idxs,T=self.T)
+            # t2=time.time()-t2
+            # t3=time.time()
             interp_vec=self.ninear_interpolation(un_x,(self.Embedding_list[i])(idx_hash))
+            # t3=time.time()-t3
             y[:,i*self.F:(i+1)*self.F]=interp_vec
+            # t1_sum+=t1
+            # t2_sum+=t2
+            # t3_sum+=t3
+        # print("Time:",t1_sum,t2_sum,t3_sum)
         return y
