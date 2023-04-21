@@ -6,12 +6,12 @@ import torch
 import cv2
 import torchvision.transforms as T
 import json
-class NeRF(Dataset):
+class NeRF_DATA(Dataset):
     def __init__(self,
                  json_path,
                  transforms=None):
 
-        
+        super.__init__()
         assert os.path.exists(json_path), "The path {} does not exist".format(json_path)
         self.path=json_path
         with open(json_path, 'r') as f:
