@@ -113,12 +113,12 @@ optimizer_MLP=torch.optim.AdamW(nerf.parameters(),lr=0.01)
 criterion=torch.nn.MSELoss()
 
 scheduler_embed = torch.optim.lr_scheduler.OneCycleLR(optimizer_embed, 
-                    max_lr = 1e-1, # Upper learning rate boundaries in the cycle for each parameter group
+                    max_lr = 5e-2, # Upper learning rate boundaries in the cycle for each parameter group
                     steps_per_epoch = len(train_loader_nerf)*80, # The number of steps per epoch to train for.
                     epochs = num_epoch, # The number of epochs to train for.
                     anneal_strategy = 'cos') 
 scheduler_MLP = torch.optim.lr_scheduler.OneCycleLR(optimizer_MLP, 
-                       max_lr = 1e-1, # Upper learning rate boundaries in the cycle for each parameter group
+                       max_lr = 5e-1, # Upper learning rate boundaries in the cycle for each parameter group
                        steps_per_epoch = len(train_loader_nerf)*80, # The number of steps per epoch to train for.
                        epochs = num_epoch, # The number of epochs to train for.
                        anneal_strategy = 'cos') 
@@ -247,7 +247,7 @@ for epoch in range(num_epoch):
                         C=VolumeRenderer.vol_render(nerf,ray_d,ray_o,num_samples=32,update_mask=True)
                         pred[prev_len:prev_len+C.shape[0]]=C
                         prev_len+=C.shape[0]
-                
+                    # break
                 img=pred.reshape(H,W,3)
                 img_np=img.detach().cpu().numpy()
                 cv2.imwrite(f'./results/hash_big{epoch}_{i}.png',((img_np[...,::-1]-img_np.min())/(img_np.max()-img_np.min())*255).astype(np.uint8))
