@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 import torch.nn as nn
 from encoder import *
 import time
+from tqdm import tqdm
 
 class NeRF(nn.Module):
   r"""
@@ -87,7 +88,8 @@ class NeRF(nn.Module):
 class Volume_Renderer():
     def __init__(self,H,W,K,near=0.,far=1.,device=None,
                 Pos_encode:Optional [PositionalEncoder]=None,
-                Dir_encode:Optional [PositionalEncoder]=None,):
+                Dir_encode:Optional [PositionalEncoder]=None,
+                max_dim=1024,sigma_val=torch.as_tensor(1),mu=torch.as_tensor(0)):
         self.H=H
         self.W=W
         self.K=K
@@ -99,15 +101,44 @@ class Volume_Renderer():
             self.device="cuda" if torch.cuda.is_available() else "cpu"
         self.Pos_encode=Pos_encode
         self.Dir_encode=Dir_encode
+        self.grid_size=max_dim//4
+        self.bool_grid=torch.ones((self.grid_size,self.grid_size,self.grid_size),device=self.device,dtype=torch.bool)
+        self.sigma_val=sigma_val.to(self.device)
+        self.mu=mu.to(self.device)
+        self.epislon=1e-5
+        self.tmp_arr=torch.zeros((self.grid_size,self.grid_size,self.grid_size),device=self.device,dtype=torch.int8)
+        self.reset_mask=False
+    
+    def update_grid(self,points:torch.Tensor,alpha:torch.Tensor,):
+        # alpha=alpha_in.reshape(-1)
+        # points=points_in.reshape(-1,3)
+        points=(points-self.mu)/self.sigma_val
+        points=points*self.grid_size
+        points=points.long()
+        alpha[alpha<1e-3]=0
+        # print("Alpha_sum:::",(alpha==0).sum())
+        print("ALPHA_MIN_MAX:",alpha.min(),alpha.max())
+        self.tmp_arr[points[...,0],points[...,1],points[...,2]]+=torch.ceil(alpha).int()
+        self.bool_grid[self.tmp_arr>0]=True
+        # print("UPDATED_MASK_VALS:",(self.bool_grid<=0).sum())
+        self.tmp_arr[self.tmp_arr>0]=0
 
+    def get_mask(self,points:torch.Tensor)->torch.Tensor:
+        # points=points_in.reshape(-1,3)
+        points=(points-self.mu)/self.sigma_val
+        points=points*(self.grid_size)
+        points=points.long()
+        mask=self.bool_grid[points[...,0],points[...,1],points[...,2]]
+        # print("Points_shape,mask_shape",points.shape,mask.shape)
+        return mask
     def vol_render(
             self,
             model:NeRF,
             rays_d:torch.Tensor,
             rays_o:torch.Tensor,
             num_samples=100,
-            
             t:Optional [torch.Tensor]=None,
+            update_mask=False
         )->Tuple[torch.Tensor,torch.Tensor]:
         # device="cuda" if torch.cuda.is_available() else "cpu"
         near=self.near
@@ -125,37 +156,61 @@ class Volume_Renderer():
         rays=rays_o[...,None,:]+rays_d[...,None,:]*t[None,:,None]
         # print("RAYS_SHAPE:",rays[...,0].max(),rays[...,1].max(),rays[...,2].max(),rays[...,0].min(),rays[...,1].min(),rays[...,2].min())
         orig_shape=rays.shape
+        # print("RAYS_SHAPE:",rays.shape)
         # print("t_shape:",rays_o[:,None,:].shape)
         t1=0
         t1=time.time()
         if Pos_encode is not None and Dir_encode is not None:
             rays=rays.reshape(-1,3)
+            rays_tmp=rays
+            mask=self.get_mask(rays)
+
             dirs=rays_d[...,None,:].repeat(1,num_samples,1)
             dirs=dirs.reshape(-1,3)
             rays=Pos_encode(rays)
-
+            # print("ENCODED_RAY SHAPE",rays.shape)
             dirs=Dir_encode(dirs)
             rays=rays.reshape(rays.shape[0],-1)
             dirs=dirs.reshape(dirs.shape[0],-1)
         elif Pos_encode is not None and Dir_encode is None:
             rays=rays.reshape(-1,3)
+            rays_tmp=rays
+            mask=self.get_mask(rays)
             dirs=rays_d[...,None,:].repeat(1,num_samples,1)
             dirs=dirs.reshape(-1,3)
             rays=Pos_encode(rays)
         else:
             print("ERROR: No positional encoding")
         t1=time.time()-t1
-            # return
-        # else:
-        #     print("SOMEHOW HERE!!")
+
         t2=time.time()
-        model_out=model(rays,dirs)
+        # print("Mask",mask.sum(),mask.shape)
         t2=time.time()-t2
         t3=time.time()
-        model_out=model_out.reshape(orig_shape[0],orig_shape[1],-1)
-        sigma=model_out[...,3]
-        rgb=model_out[...,0:3]
-
+        if update_mask is True:
+            model_out=model(rays,dirs)
+            if self.reset_mask is True:
+                self.bool_grid[...]=False
+                self.reset_mask=False
+            self.update_grid(rays_tmp,model_out[...,3])
+            sigma=model_out[...,3:4]
+            rgb=model_out[...,0:3]
+            sigma=sigma.reshape(orig_shape[0],orig_shape[1])
+            rgb=rgb.reshape(orig_shape[0],orig_shape[1],-1)
+        else:
+        # model_out=model_out
+            # model_out=model(rays[mask],dirs[mask])
+            model_out=model(rays,dirs,mask=mask)
+            print("MASKED_MODEL_OUT",model_out.shape)
+            # sigma=torch.zeros((orig_shape[0]*orig_shape[1],1),device=self.device,dtype=model_out.dtype)
+            # rgb=torch.zeros((orig_shape[0]*orig_shape[1],3),device=self.device,dtype=model_out.dtype)
+            # sigma[mask]=model_out[...,3:4]
+            # rgb[mask]=model_out[...,0:3]
+            sigma=model_out[...,3:4]
+            rgb=model_out[...,0:3]
+            sigma=sigma.reshape(orig_shape[0],orig_shape[1])
+            rgb=rgb.reshape(orig_shape[0],orig_shape[1],-1)
+        
         del_t=torch.zeros_like(t).to(device)
 
         del_t[...,:-1]=t[...,1:]-t[...,:-1]
@@ -163,8 +218,13 @@ class Volume_Renderer():
         del_t=del_t[None,:]
 
         prod=sigma*del_t
+        # print("PROD SHAPE:",prod.shape)
         T=torch.exp(-torch.cumsum(prod,axis=-1))
-        alpha=1-torch.exp(-torch.nn.functional.relu(prod+torch.randn_like(prod)*0.001))
+        # alpha=1-torch.exp(-torch.nn.functional.relu(prod+torch.randn_like(prod)*0.001))
+        alpha=1-torch.exp(-torch.nn.functional.relu(prod+torch.randn_like(prod)*1e-4))
+        # alpha=1-torch.exp(-torch.nn.functional.relu(prod))
+        # print("BEFORE_SHAPES:",T.shape,alpha.shape)
+        # print("ALL SHAPES:",T[:,:,None].shape,alpha[:,:,None].shape,rgb.shape,sigma.shape,del_t.shape)
         C=torch.sum(T[:,:,None]*alpha[:,:,None]*rgb,dim=-2)
         t3=time.time()-t3
         # print("t1:",t1,"t2:",t2,"t3:",t3)
@@ -235,17 +295,19 @@ def find_bounding_box(data_loader,near,far,K,device=None):
     W=2*K[0,2]
     H=2*K[1,2]
     # K=torch.from_numpy(np.array([[1,0,0],[0,1,0],[0,0,1]])).to(device)
+    t=torch.from_numpy(np.asarray([near,far+1])).to(device)
+    min_bound=torch.ones(3,device=device)*(1e7)
+    max_bound=torch.ones(3,device=device)*(-1e7)
     with torch.no_grad():
-        for batch in data_loader:
+        for batch in tqdm(data_loader,total=len(data_loader),desc="Bounding Box Calculation..."):
             # H,W=image.shape[:2]
             img,pose,_=batch
             pose=pose.to(device)
             rays_o, rays_d = get_od(H, W, K, pose)
-            t=strat_sampler(near,far,12,device=device)
+            # t=strat_sampler(near,far,2,device=device)
+            # print("T_shape:",t.shape)
             rays=rays_o[...,None,:]+rays_d[...,None,:]*t[None,:,None]
             rays=rays.reshape(-1,3)
-            min_bound=torch.ones(3,device=device)*(1e7)
-            max_bound=torch.ones(3,device=device)*(-1e7)
 
             for i in range(3):
                 min_elem=torch.min(rays[:,i])

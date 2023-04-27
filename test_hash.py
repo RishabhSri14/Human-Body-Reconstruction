@@ -34,6 +34,7 @@ class MLP_3D(torch.nn.Module):
         self.sig_model=torch.nn.Sequential(*sig_list)
         self.relu=torch.nn.ReLU()
         self.elu=torch.nn.ELU()
+        self.lrelu=torch.nn.LeakyReLU()
 
         col_list=[]
         col_list.append(torch.nn.Linear(15+d_view,h_size))
@@ -46,22 +47,29 @@ class MLP_3D(torch.nn.Module):
                 col_list.append(torch.nn.ReLU())
         self.col_model=torch.nn.Sequential(*col_list)
 
-    def forward(self,x,viewdirs=None):
+    def forward(self,x,viewdirs=None,mask=None):
         dens_vec=self.sig_model(x)
         density=dens_vec[:,0:1]
-        density=self.relu(density)
+        print("DENSITY_MIN_MAX:",density.min(),density.max())
+        density=self.lrelu(density)
         
         feat_vec=dens_vec[:,1:]
         if viewdirs is not None:
             rgb=self.col_model(torch.concat((feat_vec,viewdirs),dim=-1))            
             rgb=self.elu(rgb)
-            return torch.concat((density,rgb),dim=-1)
+            out= torch.concat((rgb,density),dim=-1) # Output format: (RGB,sigma)
+            if mask is not None:
+                out=out*mask[...,None]
+            return out
         else:
-            return density
+            if mask is not None:
+                return density*mask
+            else:
+                return density
 
 def train(model,num_epoch,train_loader,test_loader,encoder,shape,device='cuda',display=False,display_write=False):
-    optimizer_embed=torch.optim.SparseAdam(list(encoder.Embedding_list.parameters()),lr=0.2)
-    optimizer_MLP=torch.optim.AdamW(model.parameters(),lr=0.2)
+    optimizer_embed=torch.optim.SparseAdam(list(encoder.Embedding_list.parameters()),lr=0.01)
+    optimizer_MLP=torch.optim.AdamW(model.parameters(),lr=0.01)
     criterion=torch.nn.MSELoss()
     
     scheduler_embed = torch.optim.lr_scheduler.OneCycleLR(optimizer_embed, 
