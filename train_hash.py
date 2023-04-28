@@ -21,7 +21,9 @@ parser.add_argument('--load',action='store_true',help='Continue from checkpoint'
 parser.add_argument('--update_rate',type=int,default=15,help='Update rate for Occupancy grid')
 parser.add_argument('--write',action='store_true',help='Write the output')
 parser.add_argument('--num_epochs',type=int,default=1000,help='Number of epochs')
-parser.add_argument('--num_batch',type=int,default=1000,help='Ray batch size')
+parser.add_argument('--num_batch',type=int,default=16000,help='Ray batch size')
+parser.add_argument('--num_imgs',type=int,default=2,help='Number of imgs in a batch')
+
 # print(datacube.shape)
 args=parser.parse_args()
 device='cuda' if torch.cuda.is_available() else 'cpu'
@@ -55,7 +57,7 @@ num_epoch=args.num_epochs
 #################Train DataLoader#####################
 pth_train='data/lego/transforms_train.json'
 train_data=NeRF_DATA(json_path=pth_train)
-train_loader_nerf=torch.utils.data.DataLoader(train_data,batch_size=2,shuffle=True,num_workers=8,pin_memory=True)
+train_loader_nerf=torch.utils.data.DataLoader(train_data,batch_size=args.num_imgs,shuffle=True,num_workers=8,pin_memory=True)
 train_data.focal
 K=torch.from_numpy(np.array([[1,0,0],[0,1,0],[0,0,1]]))
 
@@ -91,7 +93,8 @@ mu=min_bound.to(device)
 # sigma=((max_bound-min_bound)**2).sum().sqrt().to(device)
 sigma=(torch.abs(max_bound-min_bound))
 # encoder=HashEncoder(N_min=16,N_max=2**10,L=L,F=F,T=2**16,dim=3,mu=mu,sigma=sigma)
-encoder=HashEncoder(N_min=16,N_max=2**14,L=L,F=F,T=2**20,dim=3,mu=mu,sigma=sigma)
+# encoder=HashEncoder(N_min=16,N_max=2**19,L=L,F=F,T=2**19,dim=3,mu=mu,sigma=sigma)
+encoder=HashEncoder(N_min=16,N_max=512,L=L,F=F,T=2**19,dim=3,mu=mu,sigma=sigma)
 dir_encoder=PositionalEncoder(d_model=3,num_freq=num_freq)
 VolumeRenderer=Volume_Renderer(H=H,W=W,K=K,near=torch.as_tensor(2.),far=torch.as_tensor(6.),device=device,Pos_encode=encoder,Dir_encode=dir_encoder,max_dim=2**10,sigma_val=sigma,mu=mu)
 
@@ -108,17 +111,17 @@ if args.compile is True:
     nerf=torch.compile(nerf,mode='reduce-overhead')
 # encoder=torch.compile(encoder,mode='max-autotune')
 
-optimizer_embed=torch.optim.SparseAdam(list(encoder.Embedding_list.parameters()),lr=0.001)
-optimizer_MLP=torch.optim.AdamW(nerf.parameters(),lr=0.001)
+optimizer_embed=torch.optim.SparseAdam(list(encoder.Embedding_list.parameters()),lr=0.01)
+optimizer_MLP=torch.optim.AdamW(nerf.parameters(),lr=0.01)
 criterion=torch.nn.MSELoss()
 
 scheduler_embed = torch.optim.lr_scheduler.OneCycleLR(optimizer_embed, 
-                    max_lr = 1e-2, # Upper learning rate boundaries in the cycle for each parameter group
+                    max_lr = 5e-2, # Upper learning rate boundaries in the cycle for each parameter group
                     steps_per_epoch = len(train_loader_nerf)*80, # The number of steps per epoch to train for.
                     epochs = num_epoch, # The number of epochs to train for.
                     anneal_strategy = 'cos') 
 scheduler_MLP = torch.optim.lr_scheduler.OneCycleLR(optimizer_MLP, 
-                       max_lr = 1e-2, # Upper learning rate boundaries in the cycle for each parameter group
+                       max_lr = 5e-2, # Upper learning rate boundaries in the cycle for each parameter group
                        steps_per_epoch = len(train_loader_nerf)*80, # The number of steps per epoch to train for.
                        epochs = num_epoch, # The number of epochs to train for.
                        anneal_strategy = 'cos') 
@@ -153,7 +156,7 @@ for epoch in range(num_epoch):
         rays_o,rays_d=rays_o.reshape(-1,3),rays_d.reshape(-1,3)
         dir_norms=dir_norms.reshape(-1,1)
         print("rays_o SHAPE!!!",rays_o.shape)
-        train_loader=torch.utils.data.DataLoader(torch.utils.data.TensorDataset(rays_o,rays_d,dir_norms,gts),batch_size=16000,shuffle=True,num_workers=8,pin_memory=True)
+        train_loader=torch.utils.data.DataLoader(torch.utils.data.TensorDataset(rays_o,rays_d,dir_norms,gts),batch_size=args.num_batch,shuffle=True,num_workers=8,pin_memory=True)
 
         t1=time.time()-t1
 
@@ -244,10 +247,12 @@ for epoch in range(num_epoch):
                         ray_o=ray_o.to(device)
                         ray_d=ray_d.to(device)
                         dir_norm=dir_norm.to(device)
-                        C=VolumeRenderer.vol_render(nerf,ray_d,ray_o,num_samples=32,update_mask=False,dir_norm=dir_norm)
+                        print(ray_o.shape,ray_d.shape,dir_norm.shape)
+                        C=VolumeRenderer.vol_render(nerf,ray_d,ray_o,num_samples=64,update_mask=True,dir_norm=dir_norm)
                         pred[prev_len:prev_len+C.shape[0]]=C
                         prev_len+=C.shape[0]
-                    break
+                        print("C.shape!!",C.shape[0])
+                    # break
                 img=pred.reshape(H,W,3)
                 img_np=img.detach().cpu().numpy()
                 cv2.imwrite(f'./results/hash_big{epoch}_{i}.png',((img_np[...,::-1]-img_np.min())/(img_np.max()-img_np.min())*255).astype(np.uint8))

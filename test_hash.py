@@ -50,7 +50,8 @@ class MLP_3D(torch.nn.Module):
     def forward(self,x,viewdirs=None,mask=None):
         dens_vec=self.sig_model(x)
         density=dens_vec[:,0:1]
-        print("DENSITY_MIN_MAX:",density.min(),density.max())
+        print("SHAPES",dens_vec.shape,density.shape,x.shape)
+        print("DENSITY_MIN_MAX:",density[:5],density.min(dim=0),density.max(dim=0))
         density=self.lrelu(density)
         
         feat_vec=dens_vec[:,1:]
@@ -73,12 +74,12 @@ def train(model,num_epoch,train_loader,test_loader,encoder,shape,device='cuda',d
     criterion=torch.nn.MSELoss()
     
     scheduler_embed = torch.optim.lr_scheduler.OneCycleLR(optimizer_embed, 
-                       max_lr = 1e-1, # Upper learning rate boundaries in the cycle for each parameter group
+                       max_lr = 5e-2, # Upper learning rate boundaries in the cycle for each parameter group
                        steps_per_epoch = len(train_loader), # The number of steps per epoch to train for.
                        epochs = num_epoch, # The number of epochs to train for.
                        anneal_strategy = 'cos') 
     scheduler_MLP = torch.optim.lr_scheduler.OneCycleLR(optimizer_MLP, 
-                       max_lr = 1e-1, # Upper learning rate boundaries in the cycle for each parameter group
+                       max_lr = 5e-2, # Upper learning rate boundaries in the cycle for each parameter group
                        steps_per_epoch = len(train_loader), # The number of steps per epoch to train for.
                        epochs = num_epoch, # The number of epochs to train for.
                        anneal_strategy = 'cos') 
