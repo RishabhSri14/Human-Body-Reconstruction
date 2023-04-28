@@ -115,11 +115,15 @@ class Volume_Renderer():
         points=(points-self.mu)/self.sigma_val
         points=points*self.grid_size
         points=points.long()
-        alpha[alpha<1e-3]=0
+        alpha[alpha<=0]=0
         # print("Alpha_sum:::",(alpha==0).sum())
         print("ALPHA_MIN_MAX:",alpha.min(),alpha.max())
         self.tmp_arr[points[...,0],points[...,1],points[...,2]]+=torch.ceil(alpha).int()
-        self.bool_grid[self.tmp_arr>0]=True
+        
+        if torch.sum(self.tmp_arr>0)==0:
+            self.bool_grid[...]=True
+        else:
+            self.bool_grid[self.tmp_arr>0]=True
         # print("UPDATED_MASK_VALS:",(self.bool_grid<=0).sum())
         self.tmp_arr[self.tmp_arr>0]=0
 
@@ -193,22 +197,22 @@ class Volume_Renderer():
             if self.reset_mask is True:
                 self.bool_grid[...]=False
                 self.reset_mask=False
-            self.update_grid(rays_tmp,model_out[...,3])
+            # self.update_grid(rays_tmp,model_out[...,3])
             sigma=model_out[...,3:4]
             rgb=model_out[...,0:3]
             sigma=sigma.reshape(orig_shape[0],orig_shape[1])
             rgb=rgb.reshape(orig_shape[0],orig_shape[1],-1)
         else:
         # model_out=model_out
-            # model_out=model(rays[mask],dirs[mask])
-            model_out=model(rays,dirs,mask=mask)
-            print("MASKED_MODEL_OUT",model_out.shape)
-            # sigma=torch.zeros((orig_shape[0]*orig_shape[1],1),device=self.device,dtype=model_out.dtype)
-            # rgb=torch.zeros((orig_shape[0]*orig_shape[1],3),device=self.device,dtype=model_out.dtype)
-            # sigma[mask]=model_out[...,3:4]
-            # rgb[mask]=model_out[...,0:3]
-            sigma=model_out[...,3:4]
-            rgb=model_out[...,0:3]
+            model_out=model(rays[mask],dirs[mask])
+            # print("MASKED_MODEL_OUT",model_out.shape)
+            sigma=torch.zeros((orig_shape[0]*orig_shape[1],1),device=self.device,dtype=model_out.dtype)
+            rgb=torch.zeros((orig_shape[0]*orig_shape[1],3),device=self.device,dtype=model_out.dtype)
+            sigma[mask]=model_out[...,3:4]
+            rgb[mask]=model_out[...,0:3]
+            # model_out=model(rays,dirs,mask=mask)
+            # sigma=model_out[...,3:4]
+            # rgb=model_out[...,0:3]
             sigma=sigma.reshape(orig_shape[0],orig_shape[1])
             rgb=rgb.reshape(orig_shape[0],orig_shape[1],-1)
         
@@ -220,10 +224,13 @@ class Volume_Renderer():
         del_t=del_t[None,:]
         del_t=dir_norm
 
+        # prod=sigma*del_t
+        # prod=torch.nn.functional.relu(sigma-torch.randn_like(sigma)*1e-5)*del_t
+        # prod=torch.nn.functional.relu(sigma)*del_t
+        sigma[sigma<-10]=-10
         prod=sigma*del_t
-        # print("PROD SHAPE:",prod.shape)
         # alpha=1-torch.exp(-torch.nn.functional.relu(prod+torch.randn_like(prod)*0.001))
-        alpha=1-torch.exp(-torch.nn.functional.relu(sigma+torch.randn_like(sigma)*1e-4)*del_t)
+        alpha=1-torch.exp(-prod)
         T=torch.exp(-torch.cumsum(prod,axis=-1))
         T=torch.roll(T,1,dims=-1)
         T[...,0]=1
@@ -277,6 +284,7 @@ def strat_sampler(
         tn:torch.tensor,
         tf:torch.tensor,
         num_samples:int,
+        exp:Optional [bool]=False,
         device:Optional[str]=None
 )->torch.tensor:
     """Stratified sampling along a ray.
@@ -290,15 +298,18 @@ def strat_sampler(
     # device=self.device
     if device is None:
         device='cuda' if torch.cuda.is_available() else 'cpu'
-    # t=torch.linspace(tn,tf,num_samples,device=device)
-    # t=t+(torch.rand_like(t)*(tf-tn)/num_samples)
     
-    t=torch.linspace(torch.log(tn),torch.log(tf),num_samples,device=device)
-    t=t+(torch.rand_like(t)*(torch.log(tf)-torch.log(tn))/num_samples)
-    t=torch.exp(t)
+    if exp:
+        t=torch.linspace(torch.log(tn),torch.log(tf),num_samples,device=device)
+        t=t+(torch.rand_like(t)*(torch.log(tf)-torch.log(tn))/num_samples)
+        t=torch.exp(t)
+    else:
+        t=torch.linspace(tn,tf,num_samples,device=device)
+        t=t+(torch.rand_like(t)*(tf-tn)/num_samples)
+    
     return t
 
-def find_bounding_box(data_loader,near,far,K,num_samples=32,device=None):
+def find_bounding_box(data_loader,near,far,K,num_samples=32,exp=False,device=None):
     if device is None:
         device=K.device
     # K[0,0]=focal
@@ -306,7 +317,10 @@ def find_bounding_box(data_loader,near,far,K,num_samples=32,device=None):
     W=2*K[0,2]
     H=2*K[1,2]
     # K=torch.from_numpy(np.array([[1,0,0],[0,1,0],[0,0,1]])).to(device)
-    t=torch.from_numpy(np.asarray([near,far*torch.exp(torch.as_tensor(torch.log(far)-torch.log(near))/num_samples)])).to(device)
+    if exp:
+        t=torch.from_numpy(np.asarray([near,far*torch.exp(torch.as_tensor(torch.log(far)-torch.log(near))/num_samples)])).to(device)
+    else:
+        t=torch.from_numpy(np.asarray([near,far+1])).to(device)
     min_bound=torch.ones(3,device=device)*(1e7)
     max_bound=torch.ones(3,device=device)*(-1e7)
     with torch.no_grad():

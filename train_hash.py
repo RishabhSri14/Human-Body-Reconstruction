@@ -108,20 +108,20 @@ if args.compile is True:
     nerf=torch.compile(nerf,mode='reduce-overhead')
 # encoder=torch.compile(encoder,mode='max-autotune')
 
-optimizer_embed=torch.optim.SparseAdam(list(encoder.Embedding_list.parameters()),lr=0.01)
-optimizer_MLP=torch.optim.AdamW(nerf.parameters(),lr=0.01)
+optimizer_embed=torch.optim.SparseAdam(list(encoder.Embedding_list.parameters()),lr=0.001)
+optimizer_MLP=torch.optim.AdamW(nerf.parameters(),lr=0.001)
 criterion=torch.nn.MSELoss()
 
-# scheduler_embed = torch.optim.lr_scheduler.OneCycleLR(optimizer_embed, 
-#                     max_lr = 9e-3, # Upper learning rate boundaries in the cycle for each parameter group
-#                     steps_per_epoch = len(train_loader_nerf)*80, # The number of steps per epoch to train for.
-#                     epochs = num_epoch, # The number of epochs to train for.
-#                     anneal_strategy = 'cos') 
-# scheduler_MLP = torch.optim.lr_scheduler.OneCycleLR(optimizer_MLP, 
-#                        max_lr = 9e-3, # Upper learning rate boundaries in the cycle for each parameter group
-#                        steps_per_epoch = len(train_loader_nerf)*80, # The number of steps per epoch to train for.
-#                        epochs = num_epoch, # The number of epochs to train for.
-#                        anneal_strategy = 'cos') 
+scheduler_embed = torch.optim.lr_scheduler.OneCycleLR(optimizer_embed, 
+                    max_lr = 1e-2, # Upper learning rate boundaries in the cycle for each parameter group
+                    steps_per_epoch = len(train_loader_nerf)*80, # The number of steps per epoch to train for.
+                    epochs = num_epoch, # The number of epochs to train for.
+                    anneal_strategy = 'cos') 
+scheduler_MLP = torch.optim.lr_scheduler.OneCycleLR(optimizer_MLP, 
+                       max_lr = 1e-2, # Upper learning rate boundaries in the cycle for each parameter group
+                       steps_per_epoch = len(train_loader_nerf)*80, # The number of steps per epoch to train for.
+                       epochs = num_epoch, # The number of epochs to train for.
+                       anneal_strategy = 'cos') 
 # scheduler_MLP= torch.optim.lr_scheduler.CyclicLR(optimizer_MLP, 
 #                      base_lr = 0.01, # Initial learning rate which is the lower boundary in the cycle for each parameter group
 #                      max_lr = 0.1, # Upper learning rate boundaries in the cycle for each parameter group
@@ -146,7 +146,6 @@ for epoch in range(num_epoch):
     for i,batch in pbar:
         t1=time.time()
         image,c2w,_=batch
-        image=image
         rays_o,rays_d,dir_norms=get_od(H,W,K,c2w)
         gts=image.permute(0,2,3,1)
         gts=gts.reshape(-1,3)
@@ -168,24 +167,24 @@ for epoch in range(num_epoch):
         else:
             update_mask=False
         for ray_o,ray_d,dir_norm,gt in tqdm(train_loader,leave=False):
-            with torch.cuda.amp.autocast():
-                ray_o=ray_o.to(device)
-                ray_d=ray_d.to(device)
-                dir_norm=dir_norm.to(device)
-                gt=gt.to(device)
+            ray_o=ray_o.to(device)
+            ray_d=ray_d.to(device)
+            dir_norm=dir_norm.to(device)
+            gt=gt.to(device)
                 # C=vol_render(nerf,ray_d,ray_o,near=2.,far=6.,num_samples=32,Pos_encode=encoder,Dir_encode=dir_encoder)
-                C=VolumeRenderer.vol_render(nerf,ray_d,ray_o,num_samples=32,update_mask=update_mask,dir_norm=dir_norm)
+            with torch.cuda.amp.autocast():
                 t11=time.time()
+                C=VolumeRenderer.vol_render(nerf,ray_d,ray_o,num_samples=64,update_mask=update_mask,dir_norm=dir_norm)
                 loss=criterion(C,gt)#/len(train_loader)
-                scaler.scale(loss).backward()
                 t11=time.time()-t11
-                scaler.step(optimizer_embed)
-                scaler.step(optimizer_MLP)
-                # scheduler_embed.step()
-                # scheduler_MLP.step()
-                optimizer_MLP.zero_grad(set_to_none=True)
-                optimizer_embed.zero_grad(set_to_none=True)
-                scaler.update()
+            scaler.scale(loss).backward()
+            scaler.step(optimizer_embed)
+            scaler.step(optimizer_MLP)
+            # scheduler_embed.step()
+            # scheduler_MLP.step()
+            optimizer_MLP.zero_grad(set_to_none=True)
+            optimizer_embed.zero_grad(set_to_none=True)
+            scaler.update()
             # print("time:",t11)
                 # Color.append(C)
             # pred[prev_len:prev_len+C.shape[0]]=C
@@ -217,7 +216,7 @@ for epoch in range(num_epoch):
                     ray_o=ray_o.to(device)
                     ray_d=ray_d.to(device)
                     # C=vol_render(nerf,ray_d,ray_o,near=2.,far=6.,num_samples=64,Pos_encode=encoder,Dir_encode=dir_encoder)
-                    C=VolumeRenderer.vol_render(nerf,ray_d,ray_o,num_samples=32,dir_norm=dir_norm)
+                    C=VolumeRenderer.vol_render(nerf,ray_d,ray_o,num_samples=64,dir_norm=dir_norm)
                     pred[prev_len:prev_len+C.shape[0]]=C
                     prev_len=C.shape[0]
                 # pred=torch.cat(Color,dim=0)
@@ -235,8 +234,8 @@ for epoch in range(num_epoch):
                 print(len(test_loader_nerf))
                 for batch in test_loader_nerf:
                     image,c2w,_=batch
-                    c2w=c2w
-                    # c2w=pose.to(device)
+                    # c2w=c2w[0:1,...]
+                    # image=image[0:1,...]
                     rays_o, rays_d,dir_norms=get_od(H,W,K,c2w)
                     rays_o,rays_d=rays_o.reshape(-1,3),rays_d.reshape(-1,3)
                     dir_norms=dir_norms.reshape(-1,1)
@@ -248,7 +247,7 @@ for epoch in range(num_epoch):
                         C=VolumeRenderer.vol_render(nerf,ray_d,ray_o,num_samples=32,update_mask=False,dir_norm=dir_norm)
                         pred[prev_len:prev_len+C.shape[0]]=C
                         prev_len+=C.shape[0]
-                    # break
+                    break
                 img=pred.reshape(H,W,3)
                 img_np=img.detach().cpu().numpy()
                 cv2.imwrite(f'./results/hash_big{epoch}_{i}.png',((img_np[...,::-1]-img_np.min())/(img_np.max()-img_np.min())*255).astype(np.uint8))
