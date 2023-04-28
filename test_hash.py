@@ -51,7 +51,7 @@ class MLP_3D(torch.nn.Module):
         dens_vec=self.sig_model(x)
         density=dens_vec[:,0:1]
         print("DENSITY_MIN_MAX:",density.min(),density.max())
-        density=self.lrelu(density)
+        density=self.relu(density)
         
         feat_vec=dens_vec[:,1:]
         if viewdirs is not None:

@@ -84,7 +84,7 @@ test_loader_nerf=torch.utils.data.DataLoader(test_data,batch_size=1,shuffle=Fals
 
 L=16
 F=2
-max_bound,min_bound=find_bounding_box(train_loader_nerf,near=2.0,far=6.0,K=K)
+max_bound,min_bound=find_bounding_box(train_loader_nerf,near=torch.as_tensor(2.0),far=torch.as_tensor(6.0),K=K)
 print("BOUNDING BOX:",max_bound,min_bound)
 mu=min_bound.to(device)
 
@@ -93,7 +93,7 @@ sigma=(torch.abs(max_bound-min_bound))
 # encoder=HashEncoder(N_min=16,N_max=2**10,L=L,F=F,T=2**16,dim=3,mu=mu,sigma=sigma)
 encoder=HashEncoder(N_min=16,N_max=2**14,L=L,F=F,T=2**20,dim=3,mu=mu,sigma=sigma)
 dir_encoder=PositionalEncoder(d_model=3,num_freq=num_freq)
-VolumeRenderer=Volume_Renderer(H=H,W=W,K=K,near=2.,far=6.,device=device,Pos_encode=encoder,Dir_encode=dir_encoder,max_dim=2**10,sigma_val=sigma,mu=mu)
+VolumeRenderer=Volume_Renderer(H=H,W=W,K=K,near=torch.as_tensor(2.),far=torch.as_tensor(6.),device=device,Pos_encode=encoder,Dir_encode=dir_encoder,max_dim=2**10,sigma_val=sigma,mu=mu)
 
 nerf=torch.nn.DataParallel(MLP_3D(num_sig=2,num_col=2,L=L,F=F,d_view=3*num_freq*2))
 # if args.load is True:
@@ -112,16 +112,16 @@ optimizer_embed=torch.optim.SparseAdam(list(encoder.Embedding_list.parameters())
 optimizer_MLP=torch.optim.AdamW(nerf.parameters(),lr=0.01)
 criterion=torch.nn.MSELoss()
 
-scheduler_embed = torch.optim.lr_scheduler.OneCycleLR(optimizer_embed, 
-                    max_lr = 5e-2, # Upper learning rate boundaries in the cycle for each parameter group
-                    steps_per_epoch = len(train_loader_nerf)*80, # The number of steps per epoch to train for.
-                    epochs = num_epoch, # The number of epochs to train for.
-                    anneal_strategy = 'cos') 
-scheduler_MLP = torch.optim.lr_scheduler.OneCycleLR(optimizer_MLP, 
-                       max_lr = 5e-1, # Upper learning rate boundaries in the cycle for each parameter group
-                       steps_per_epoch = len(train_loader_nerf)*80, # The number of steps per epoch to train for.
-                       epochs = num_epoch, # The number of epochs to train for.
-                       anneal_strategy = 'cos') 
+# scheduler_embed = torch.optim.lr_scheduler.OneCycleLR(optimizer_embed, 
+#                     max_lr = 9e-3, # Upper learning rate boundaries in the cycle for each parameter group
+#                     steps_per_epoch = len(train_loader_nerf)*80, # The number of steps per epoch to train for.
+#                     epochs = num_epoch, # The number of epochs to train for.
+#                     anneal_strategy = 'cos') 
+# scheduler_MLP = torch.optim.lr_scheduler.OneCycleLR(optimizer_MLP, 
+#                        max_lr = 9e-3, # Upper learning rate boundaries in the cycle for each parameter group
+#                        steps_per_epoch = len(train_loader_nerf)*80, # The number of steps per epoch to train for.
+#                        epochs = num_epoch, # The number of epochs to train for.
+#                        anneal_strategy = 'cos') 
 # scheduler_MLP= torch.optim.lr_scheduler.CyclicLR(optimizer_MLP, 
 #                      base_lr = 0.01, # Initial learning rate which is the lower boundary in the cycle for each parameter group
 #                      max_lr = 0.1, # Upper learning rate boundaries in the cycle for each parameter group
@@ -147,15 +147,14 @@ for epoch in range(num_epoch):
         t1=time.time()
         image,c2w,_=batch
         image=image
-        c2w=c2w
-        rays_o, rays_d=get_od(H,W,K,c2w)
-
+        rays_o,rays_d,dir_norms=get_od(H,W,K,c2w)
         gts=image.permute(0,2,3,1)
         gts=gts.reshape(-1,3)
         # print(rays_o.shape,rays_d.shape)
         rays_o,rays_d=rays_o.reshape(-1,3),rays_d.reshape(-1,3)
+        dir_norms=dir_norms.reshape(-1,1)
         print("rays_o SHAPE!!!",rays_o.shape)
-        train_loader=torch.utils.data.DataLoader(torch.utils.data.TensorDataset(rays_o,rays_d,gts),batch_size=16000,shuffle=True,num_workers=8,pin_memory=True)
+        train_loader=torch.utils.data.DataLoader(torch.utils.data.TensorDataset(rays_o,rays_d,dir_norms,gts),batch_size=16000,shuffle=True,num_workers=8,pin_memory=True)
 
         t1=time.time()-t1
 
@@ -168,21 +167,22 @@ for epoch in range(num_epoch):
             p=0
         else:
             update_mask=False
-        for ray_o,ray_d,gt in tqdm(train_loader,leave=False):
+        for ray_o,ray_d,dir_norm,gt in tqdm(train_loader,leave=False):
             with torch.cuda.amp.autocast():
                 ray_o=ray_o.to(device)
                 ray_d=ray_d.to(device)
+                dir_norm=dir_norm.to(device)
                 gt=gt.to(device)
                 # C=vol_render(nerf,ray_d,ray_o,near=2.,far=6.,num_samples=32,Pos_encode=encoder,Dir_encode=dir_encoder)
-                C=VolumeRenderer.vol_render(nerf,ray_d,ray_o,num_samples=32,update_mask=update_mask)
+                C=VolumeRenderer.vol_render(nerf,ray_d,ray_o,num_samples=32,update_mask=update_mask,dir_norm=dir_norm)
                 t11=time.time()
                 loss=criterion(C,gt)#/len(train_loader)
                 scaler.scale(loss).backward()
                 t11=time.time()-t11
                 scaler.step(optimizer_embed)
                 scaler.step(optimizer_MLP)
-                scheduler_embed.step()
-                scheduler_MLP.step()
+                # scheduler_embed.step()
+                # scheduler_MLP.step()
                 optimizer_MLP.zero_grad(set_to_none=True)
                 optimizer_embed.zero_grad(set_to_none=True)
                 scaler.update()
@@ -217,7 +217,7 @@ for epoch in range(num_epoch):
                     ray_o=ray_o.to(device)
                     ray_d=ray_d.to(device)
                     # C=vol_render(nerf,ray_d,ray_o,near=2.,far=6.,num_samples=64,Pos_encode=encoder,Dir_encode=dir_encoder)
-                    C=VolumeRenderer.vol_render(nerf,ray_d,ray_o,num_samples=32)
+                    C=VolumeRenderer.vol_render(nerf,ray_d,ray_o,num_samples=32,dir_norm=dir_norm)
                     pred[prev_len:prev_len+C.shape[0]]=C
                     prev_len=C.shape[0]
                 # pred=torch.cat(Color,dim=0)
@@ -237,14 +237,15 @@ for epoch in range(num_epoch):
                     image,c2w,_=batch
                     c2w=c2w
                     # c2w=pose.to(device)
-                    rays_o, rays_d=get_od(H,W,K,c2w)
+                    rays_o, rays_d,dir_norms=get_od(H,W,K,c2w)
                     rays_o,rays_d=rays_o.reshape(-1,3),rays_d.reshape(-1,3)
-                    test_loader=torch.utils.data.DataLoader(torch.utils.data.TensorDataset(rays_o,rays_d),batch_size=32000,shuffle=False,num_workers=8,pin_memory=True)
-                    for ray_o, ray_d in tqdm(test_loader): 
+                    dir_norms=dir_norms.reshape(-1,1)
+                    test_loader=torch.utils.data.DataLoader(torch.utils.data.TensorDataset(rays_o,rays_d,dir_norms),batch_size=32000,shuffle=False,num_workers=8,pin_memory=True)
+                    for ray_o, ray_d,dir_norm in tqdm(test_loader): 
                         ray_o=ray_o.to(device)
                         ray_d=ray_d.to(device)
-
-                        C=VolumeRenderer.vol_render(nerf,ray_d,ray_o,num_samples=32,update_mask=True)
+                        dir_norm=dir_norm.to(device)
+                        C=VolumeRenderer.vol_render(nerf,ray_d,ray_o,num_samples=32,update_mask=False,dir_norm=dir_norm)
                         pred[prev_len:prev_len+C.shape[0]]=C
                         prev_len+=C.shape[0]
                     # break

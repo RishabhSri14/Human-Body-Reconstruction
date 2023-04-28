@@ -138,7 +138,8 @@ class Volume_Renderer():
             rays_o:torch.Tensor,
             num_samples=100,
             t:Optional [torch.Tensor]=None,
-            update_mask=False
+            update_mask=False,
+            dir_norm:Optional [int]=1
         )->Tuple[torch.Tensor,torch.Tensor]:
         # device="cuda" if torch.cuda.is_available() else "cpu"
         near=self.near
@@ -214,14 +215,21 @@ class Volume_Renderer():
         del_t=torch.zeros_like(t).to(device)
 
         del_t[...,:-1]=t[...,1:]-t[...,:-1]
-        # del_t[...,-1]=1e10
+        print("del_t",del_t.shape,dir_norm.shape)
+        # del_t[...,-1]=1e5
         del_t=del_t[None,:]
+        del_t=dir_norm
 
         prod=sigma*del_t
         # print("PROD SHAPE:",prod.shape)
-        T=torch.exp(-torch.cumsum(prod,axis=-1))
         # alpha=1-torch.exp(-torch.nn.functional.relu(prod+torch.randn_like(prod)*0.001))
-        alpha=1-torch.exp(-torch.nn.functional.relu(prod+torch.randn_like(prod)*1e-4))
+        alpha=1-torch.exp(-torch.nn.functional.relu(sigma+torch.randn_like(sigma)*1e-4)*del_t)
+        T=torch.exp(-torch.cumsum(prod,axis=-1))
+        T=torch.roll(T,1,dims=-1)
+        T[...,0]=1
+        # tmp=T[...,0]
+        # T[...,:-1]=T[...,1:]
+        # T[...,-1]=tmp
         # alpha=1-torch.exp(-torch.nn.functional.relu(prod))
         # print("BEFORE_SHAPES:",T.shape,alpha.shape)
         # print("ALL SHAPES:",T[:,:,None].shape,alpha[:,:,None].shape,rgb.shape,sigma.shape,del_t.shape)
@@ -263,8 +271,7 @@ def get_od(
     else:
         rays_d=((c2w[...,:3,:3])@(dirs.mT)).mT
     rays_o = (c2w[...,:3, 3:4].mT).expand(-1,(rays_d.shape[1]),-1)
-    
-    return rays_o, rays_d/torch.norm(rays_d,dim=-1,keepdim=True)
+    return rays_o, rays_d/torch.norm(rays_d,dim=-1,keepdim=True),torch.norm(rays_d,dim=-1,keepdim=True)
 
 def strat_sampler(
         tn:torch.tensor,
@@ -283,11 +290,15 @@ def strat_sampler(
     # device=self.device
     if device is None:
         device='cuda' if torch.cuda.is_available() else 'cpu'
-    t=torch.linspace(tn,tf,num_samples,device=device)
-    t=t+(torch.rand_like(t)*(tf-tn)/num_samples)
+    # t=torch.linspace(tn,tf,num_samples,device=device)
+    # t=t+(torch.rand_like(t)*(tf-tn)/num_samples)
+    
+    t=torch.linspace(torch.log(tn),torch.log(tf),num_samples,device=device)
+    t=t+(torch.rand_like(t)*(torch.log(tf)-torch.log(tn))/num_samples)
+    t=torch.exp(t)
     return t
 
-def find_bounding_box(data_loader,near,far,K,device=None):
+def find_bounding_box(data_loader,near,far,K,num_samples=32,device=None):
     if device is None:
         device=K.device
     # K[0,0]=focal
@@ -295,15 +306,15 @@ def find_bounding_box(data_loader,near,far,K,device=None):
     W=2*K[0,2]
     H=2*K[1,2]
     # K=torch.from_numpy(np.array([[1,0,0],[0,1,0],[0,0,1]])).to(device)
-    t=torch.from_numpy(np.asarray([near,far+1])).to(device)
+    t=torch.from_numpy(np.asarray([near,far*torch.exp(torch.as_tensor(torch.log(far)-torch.log(near))/num_samples)])).to(device)
     min_bound=torch.ones(3,device=device)*(1e7)
     max_bound=torch.ones(3,device=device)*(-1e7)
     with torch.no_grad():
         for batch in tqdm(data_loader,total=len(data_loader),desc="Bounding Box Calculation..."):
             # H,W=image.shape[:2]
-            img,pose,_=batch
-            pose=pose.to(device)
-            rays_o, rays_d = get_od(H, W, K, pose)
+            _,c2w,_=batch
+            c2w=c2w.to(device)
+            rays_o, rays_d,_ = get_od(H, W, K, c2w)
             # t=strat_sampler(near,far,2,device=device)
             # print("T_shape:",t.shape)
             rays=rays_o[...,None,:]+rays_d[...,None,:]*t[None,:,None]
@@ -360,7 +371,7 @@ if __name__=="__main__":
     c2w=torch.from_numpy(np.array([[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]],dtype=np.float32)).to(device)
     c2w=torch.tensor(poses[0,...],device=device)
     print("c2w:",c2w)
-    rays_o, rays_d=get_od(H,W,K,c2w)
+    rays_o, rays_d,_=get_od(H,W,K,c2w)
     origins=rays_o.cpu().numpy()
     dirs=rays_d.cpu().numpy()
 
