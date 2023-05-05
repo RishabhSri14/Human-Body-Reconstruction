@@ -13,7 +13,8 @@ from tqdm import tqdm
 import time
 import argparse
 from dataset import NeRF_DATA
-
+from helper import *
+from tmp_encoder import *
 parser = argparse.ArgumentParser(description='Train Hashing')
 parser.add_argument('--display',action='store_true',help='Display the output')
 parser.add_argument('--compile',action='store_true',help='Use torch.compile(), might speed up')
@@ -23,6 +24,9 @@ parser.add_argument('--write',action='store_true',help='Write the output')
 parser.add_argument('--num_epochs',type=int,default=1000,help='Number of epochs')
 parser.add_argument('--num_batch',type=int,default=16000,help='Ray batch size')
 parser.add_argument('--num_imgs',type=int,default=2,help='Number of imgs in a batch')
+parser.add_argument('--num_samples',type=int,default=64,help='Number of samples along ray')
+parser.add_argument('--plot_grads',action='store_true',help='Plot the gradients after each iteration')
+
 
 # print(datacube.shape)
 args=parser.parse_args()
@@ -90,11 +94,12 @@ max_bound,min_bound=find_bounding_box(train_loader_nerf,near=torch.as_tensor(2.0
 print("BOUNDING BOX:",max_bound,min_bound)
 mu=min_bound.to(device)
 
-# sigma=((max_bound-min_bound)**2).sum().sqrt().to(device)
-sigma=(torch.abs(max_bound-min_bound))
+sigma=((max_bound-min_bound)**2).sum().sqrt().to(device)
+# sigma=(torch.abs(max_bound-min_bound))
 # encoder=HashEncoder(N_min=16,N_max=2**10,L=L,F=F,T=2**16,dim=3,mu=mu,sigma=sigma)
 # encoder=HashEncoder(N_min=16,N_max=2**19,L=L,F=F,T=2**19,dim=3,mu=mu,sigma=sigma)
-encoder=HashEncoder(N_min=16,N_max=512,L=L,F=F,T=2**19,dim=3,mu=mu,sigma=sigma)
+encoder=HashEncoder(N_min=16,N_max=2048,L=L,F=F,T=2**19,dim=3,mu=mu,sigma=sigma)
+# encoder=MultiResHashGrid(3,log2_hashmap_size=19,finest_resolution=2048,mu=mu,sigma=sigma)
 dir_encoder=PositionalEncoder(d_model=3,num_freq=num_freq)
 VolumeRenderer=Volume_Renderer(H=H,W=W,K=K,near=torch.as_tensor(2.),far=torch.as_tensor(6.),device=device,Pos_encode=encoder,Dir_encode=dir_encoder,max_dim=2**10,sigma_val=sigma,mu=mu)
 
@@ -111,9 +116,10 @@ if args.compile is True:
     nerf=torch.compile(nerf,mode='reduce-overhead')
 # encoder=torch.compile(encoder,mode='max-autotune')
 
-optimizer_embed=torch.optim.SparseAdam(list(encoder.Embedding_list.parameters()),lr=0.01)
+optimizer_embed=torch.optim.Adam(list(encoder.Embedding_list.parameters()),lr=0.01)
+# optimizer_embed=torch.optim.Adam(list(encoder.levels.parameters()),lr=0.01)
 optimizer_MLP=torch.optim.AdamW(nerf.parameters(),lr=0.01)
-criterion=torch.nn.MSELoss()
+criterion=torch.nn.HuberLoss(reduction='mean')
 
 scheduler_embed = torch.optim.lr_scheduler.OneCycleLR(optimizer_embed, 
                     max_lr = 5e-2, # Upper learning rate boundaries in the cycle for each parameter group
@@ -140,7 +146,7 @@ nerf.train()
 encoder.train()
 n_imgs=3
 
-
+num_samples=args.num_samples
 # NOTE Mixed Precision Scaler Here
 p=0
 scaler=torch.cuda.amp.GradScaler()
@@ -177,12 +183,14 @@ for epoch in range(num_epoch):
                 # C=vol_render(nerf,ray_d,ray_o,near=2.,far=6.,num_samples=32,Pos_encode=encoder,Dir_encode=dir_encoder)
             with torch.cuda.amp.autocast():
                 t11=time.time()
-                C=VolumeRenderer.vol_render(nerf,ray_d,ray_o,num_samples=64,update_mask=update_mask,dir_norm=dir_norm)
-                loss=criterion(C,gt)#/len(train_loader)
+                Cr,Cf=VolumeRenderer.vol_render(nerf,ray_d,ray_o,num_samples=num_samples,update_mask=update_mask,dir_norm=dir_norm,hierarchical=False)
+                loss=criterion(Cr,gt)+criterion(Cf,gt)#/len(train_loader)
                 t11=time.time()-t11
             scaler.scale(loss).backward()
             scaler.step(optimizer_embed)
             scaler.step(optimizer_MLP)
+            if args.plot_grads is True:
+                plot_grad_flow(encoder.Embedding_list.named_parameters())
             # scheduler_embed.step()
             # scheduler_MLP.step()
             optimizer_MLP.zero_grad(set_to_none=True)
@@ -248,14 +256,14 @@ for epoch in range(num_epoch):
                         ray_d=ray_d.to(device)
                         dir_norm=dir_norm.to(device)
                         print(ray_o.shape,ray_d.shape,dir_norm.shape)
-                        C=VolumeRenderer.vol_render(nerf,ray_d,ray_o,num_samples=64,update_mask=True,dir_norm=dir_norm)
+                        _,C=VolumeRenderer.vol_render(nerf,ray_d,ray_o,num_samples=num_samples,update_mask=True,dir_norm=dir_norm,hierarchical=False)
                         pred[prev_len:prev_len+C.shape[0]]=C
                         prev_len+=C.shape[0]
                         print("C.shape!!",C.shape[0])
                     # break
                 img=pred.reshape(H,W,3)
                 img_np=img.detach().cpu().numpy()
-                cv2.imwrite(f'./results/hash_big{epoch}_{i}.png',((img_np[...,::-1]-img_np.min())/(img_np.max()-img_np.min())*255).astype(np.uint8))
+                cv2.imwrite(f'./results/hash_big_1024{epoch}_{i}.png',((img_np[...,::-1]-img_np.min())/(img_np.max()-img_np.min())*255).astype(np.uint8))
                 # plt.imsave(f'./results/{i}.png',img_out)
                 torch.save(nerf.state_dict(),'Nerf_hash.pth')
                 torch.save(encoder.state_dict(),'encoder_hash.pth')

@@ -50,8 +50,10 @@ class MLP_3D(torch.nn.Module):
     def forward(self,x,viewdirs=None,mask=None):
         dens_vec=self.sig_model(x)
         density=dens_vec[:,0:1]
-        print("SHAPES",dens_vec.shape,density.shape,x.shape)
-        print("DENSITY_MIN_MAX:",density[:5],density.min(dim=0),density.max(dim=0))
+        # print("SHAPES",dens_vec.shape,density.shape,x.shape)
+        # print("DENSITY_MIN_MAX:",density[:5],density.min(dim=0),density.max(dim=0))
+        if density.max()<0:
+            print("WARNING: DENSITY IS NEGATIVE!")
         density=self.lrelu(density)
         
         feat_vec=dens_vec[:,1:]
