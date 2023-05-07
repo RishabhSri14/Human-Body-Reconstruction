@@ -10,7 +10,7 @@ class HashEncoder(nn.Module):
         self.device=device
         self.N_max = torch.tensor(N_max)
         self.N_min = torch.tensor(N_min)
-        self.b=torch.exp((torch.log(self.N_max)-torch.log(self.N_min))/L)
+        self.b=torch.exp((torch.log(self.N_max)-torch.log(self.N_min))/(L-1))
         Embedding_list=[]
         self.L=L
         self.F=F
@@ -154,7 +154,6 @@ class HashEncoder(nn.Module):
             un_x=((x-self.mu)/self.sigma)*N_l
             # print(un_x.shape,x.shape,self.mu.shape,self.sigma.shape)
             # t1=time.time()
-            bdims = len(x.shape[:-1])
             x_val=torch.stack([un_x.long(),un_x.long()+1],dim=-1)
             diff=(un_x-x_val[...,0])
             x_val=x_val[...,None,:,:]

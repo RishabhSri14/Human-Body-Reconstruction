@@ -25,6 +25,8 @@ parser.add_argument('--num_epochs',type=int,default=1000,help='Number of epochs'
 parser.add_argument('--num_batch',type=int,default=16000,help='Ray batch size')
 parser.add_argument('--num_imgs',type=int,default=2,help='Number of imgs in a batch')
 parser.add_argument('--num_samples',type=int,default=64,help='Number of samples along ray')
+parser.add_argument('--near',type=float,default=2.0,help='Near point')
+parser.add_argument('--far',type=float,default=6.0,help='Far point')
 parser.add_argument('--plot_grads',action='store_true',help='Plot the gradients after each iteration')
 parser.add_argument('--use_sdf',action='store_true',help='Use sdf formulation while training')
 parser.add_argument('--hierarchical',action='store_true',help='Use hierarchical sampling')
@@ -92,7 +94,9 @@ test_loader_nerf=torch.utils.data.DataLoader(test_data,batch_size=1,shuffle=Fals
 
 L=16
 F=2
-max_bound,min_bound=find_bounding_box(train_loader_nerf,near=torch.as_tensor(2.0),far=torch.as_tensor(6.0),K=K)
+near=torch.tensor(args.near)
+far=torch.tensor(args.far)
+max_bound,min_bound=find_bounding_box(train_loader_nerf,near=near,far=far,K=K)
 print("BOUNDING BOX:",max_bound,min_bound)
 mu=min_bound.to(device)
 
@@ -107,7 +111,7 @@ var_model=None
 if args.use_sdf is True:
     var_model=VarModel()
     var_model=var_model.to(device)
-VolumeRenderer=Volume_Renderer(H=H,W=W,K=K,near=torch.as_tensor(2.),far=torch.as_tensor(6.),device=device,Pos_encode=encoder,Dir_encode=dir_encoder,max_dim=2**10,sigma_val=sigma,mu=mu,use_sdf=args.use_sdf,var_model=var_model)
+VolumeRenderer=Volume_Renderer(H=H,W=W,K=K,near=near,far=far,device=device,Pos_encode=encoder,Dir_encode=dir_encoder,max_dim=2**10,sigma_val=sigma,mu=mu,use_sdf=args.use_sdf,var_model=var_model)
 nerf=torch.nn.DataParallel(MLP_3D(num_sig=2,num_col=2,L=L,F=F,d_view=3*num_freq*2,max_bound=max_bound,min_bound=min_bound))
 # if args.load is True:
 if args.load is True:
@@ -205,14 +209,14 @@ for epoch in range(num_epoch):
             scaler.step(optimizer_MLP)
             if args.plot_grads is True:
                 plot_grad_flow(encoder.Embedding_list.named_parameters())
-            # scheduler_embed.step()
-            # scheduler_MLP.step()
+            scheduler_embed.step()
+            scheduler_MLP.step()
             optimizer_MLP.zero_grad(set_to_none=True)
             optimizer_embed.zero_grad(set_to_none=True)
             if args.use_sdf is True:
                 scaler.step(optimizer_var)
                 optimizer_var.zero_grad(set_to_none=True)
-                # scheduler_var.step()
+                scheduler_var.step()
             scaler.update()
             # print("time:",t11)
                 # Color.append(C)

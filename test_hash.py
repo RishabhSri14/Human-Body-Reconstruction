@@ -18,10 +18,12 @@ class MLP_2D(torch.nn.Module):
         return x
 
 class MLP_3D(torch.nn.Module):
-    def __init__(self,num_sig=3,num_col=2,h_size=64,d_view=3,L=16,F=2,E=0):
+    def __init__(self,num_sig=3,num_col=2,h_size=64,d_view=3,L=16,F=2,E=0,use_sdf=False,max_bound=1.0,min_bound=-1.0):
         super().__init__()
         self.d_view=d_view
         sig_list=[]
+        self.max_bound=max_bound.to('cuda')
+        self.min_bound=min_bound.to('cuda')
         sig_list.append(torch.nn.Linear(L*F+E,h_size))
         sig_list.append(torch.nn.ReLU())
         for i in range(num_sig):
@@ -46,7 +48,7 @@ class MLP_3D(torch.nn.Module):
                 col_list.append(torch.nn.Linear(h_size,h_size))
                 col_list.append(torch.nn.ReLU())
         self.col_model=torch.nn.Sequential(*col_list)
-
+        self.use_sdf=use_sdf
     def forward(self,x,viewdirs=None,mask=None):
         dens_vec=self.sig_model(x)
         density=dens_vec[:,0:1]
@@ -54,12 +56,16 @@ class MLP_3D(torch.nn.Module):
         # print("DENSITY_MIN_MAX:",density[:5],density.min(dim=0),density.max(dim=0))
         if density.max()<0:
             print("WARNING: DENSITY IS NEGATIVE!")
-        density=self.lrelu(density)
+        if self.use_sdf:
+            density=2*self.sigmoid(density)-1
+        else:
+            density=self.lrelu(density)
         
         feat_vec=dens_vec[:,1:]
         if viewdirs is not None:
             rgb=self.col_model(torch.concat((feat_vec,viewdirs),dim=-1))            
             rgb=self.elu(rgb)
+            # rgb=self.relu(rgb)
             out= torch.concat((rgb,density),dim=-1) # Output format: (RGB,sigma)
             if mask is not None:
                 out=out*mask[...,None]
@@ -69,6 +75,35 @@ class MLP_3D(torch.nn.Module):
                 return density*mask
             else:
                 return density
+    def forward_sdf(self,x,encoder=None):
+        if encoder is not None:
+            x=encoder(x)
+        dens_vec=self.sig_model(x)
+        density=dens_vec[:,0:1]
+        density=2*self.sigmoid(density)-1
+        return density
+
+    def finite_difference_normals_approximator(self, x, epsilon = 0.0005,encoder=None):
+    # finite difference
+        min_bound = self.min_bound
+        max_bound= self.max_bound
+    # f(x+h, y, z), f(x, y+h, z), f(x, y, z+h) - f(x-h, y, z), f(x, y-h, z), f(x, y, z-h)
+        pos_x = x + torch.tensor([[epsilon, 0.00, 0.00]], device=x.device)
+        dist_dx_pos = self.forward_sdf(pos_x.clamp(min_bound, max_bound),encoder)[:,:1]
+        pos_y = x + torch.tensor([[0.00, epsilon, 0.00]], device=x.device)
+        dist_dy_pos = self.forward_sdf(pos_y.clamp(min_bound, max_bound),encoder)[:,:1]
+        pos_z = x + torch.tensor([[0.00, 0.00, epsilon]], device=x.device)
+        dist_dz_pos = self.forward_sdf(pos_z.clamp(min_bound,max_bound),encoder)[:,:1]
+
+        neg_x = x + torch.tensor([[-epsilon, 0.00, 0.00]], device=x.device)
+        dist_dx_neg = self.forward_sdf(neg_x.clamp(min_bound, max_bound),encoder)[:,:1]
+        neg_y = x + torch.tensor([[0.00, -epsilon, 0.00]], device=x.device)
+        dist_dy_neg  = self.forward_sdf(neg_y.clamp(min_bound, max_bound),encoder)[:,:1]
+        neg_z = x + torch.tensor([[0.00, 0.00, -epsilon]], device=x.device)
+        dist_dz_neg  = self.forward_sdf(neg_z.clamp(min_bound, max_bound),encoder)[:,:1]
+
+        return torch.cat([0.5*(dist_dx_pos - dist_dx_neg) / epsilon, 0.5*(dist_dy_pos - dist_dy_neg) / epsilon, 0.5*(dist_dz_pos - dist_dz_neg) / epsilon], dim=-1)
+
 
 def train(model,num_epoch,train_loader,test_loader,encoder,shape,device='cuda',display=False,display_write=False):
     optimizer_embed=torch.optim.SparseAdam(list(encoder.Embedding_list.parameters()),lr=0.01)

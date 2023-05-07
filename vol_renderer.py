@@ -89,7 +89,9 @@ class Volume_Renderer():
     def __init__(self,H,W,K,near=0.,far=1.,device=None,
                 Pos_encode:Optional [PositionalEncoder]=None,
                 Dir_encode:Optional [PositionalEncoder]=None,
-                max_dim=1024,sigma_val=torch.as_tensor(1),mu=torch.as_tensor(0)):
+                max_dim=1024,sigma_val=torch.as_tensor(1),mu=torch.as_tensor(0),
+                use_sdf:Optional[bool]=False,
+                var_model: Optional[nn.Module] = None,):
         self.H=H
         self.W=W
         self.K=K
@@ -108,6 +110,8 @@ class Volume_Renderer():
         self.epislon=1e-5
         self.tmp_arr=torch.zeros((self.grid_size,self.grid_size,self.grid_size),device=self.device,dtype=torch.int8)
         self.reset_mask=False
+        self.use_sdf=use_sdf
+        self.var_model=var_model
     
     def update_grid(self,points:torch.Tensor,alpha:torch.Tensor,):
         # alpha=alpha_in.reshape(-1)
@@ -216,8 +220,7 @@ class Volume_Renderer():
             sigma=sigma.reshape(orig_shape[0],orig_shape[1])
             rgb=rgb.reshape(orig_shape[0],orig_shape[1],-1)
 
-        
-        Cr,wts=calc_color(t=t,rgb=rgb,sigma=sigma,dir_norm=dir_norm,device=device)
+        Cr,wts,norm=calc_color(t=t,rgb=rgb,sigma=sigma,dir_norm=dir_norm,use_sdf=self.use_sdf,var_model=self.var_model,rays=rays_tmp,model=model,encoder=Pos_encode,device=device)
 
         if hierarchical is True:
             rays_fine,t_fine=hierarchical_sampling(rays_o,rays_d,z_vals=t,weights=wts,n_samples=num_samples,tn=near,tf=far,device=device)
@@ -236,10 +239,10 @@ class Volume_Renderer():
             rgb_fine=model_out[...,0:3]
             sigma_fine=sigma_fine.reshape(orig_shape[0],orig_shape[1])
             rgb_fine=rgb_fine.reshape(orig_shape[0],orig_shape[1],-1)
-            Cf,_=calc_color(t=t_fine,rgb=rgb_fine,sigma=sigma_fine,dir_norm=dir_norm,device=device)
+            Cf,_,norm=calc_color(t=t_fine,rgb=rgb_fine,sigma=sigma_fine,dir_norm=dir_norm,use_sdf=self.use_sdf,var_model=self.var_model,model=model,encoder=Pos_encode,device=device)
         else:
             Cf=Cr
-        return Cr,Cf
+        return Cr,Cf,norm
 
 
 ######################################################################
