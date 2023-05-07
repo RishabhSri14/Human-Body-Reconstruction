@@ -26,6 +26,8 @@ parser.add_argument('--num_batch',type=int,default=16000,help='Ray batch size')
 parser.add_argument('--num_imgs',type=int,default=2,help='Number of imgs in a batch')
 parser.add_argument('--num_samples',type=int,default=64,help='Number of samples along ray')
 parser.add_argument('--plot_grads',action='store_true',help='Plot the gradients after each iteration')
+parser.add_argument('--use_sdf',action='store_true',help='Use sdf formulation while training')
+parser.add_argument('--hierarchical',action='store_true',help='Use hierarchical sampling')
 
 
 # print(datacube.shape)
@@ -98,12 +100,15 @@ sigma=((max_bound-min_bound)**2).sum().sqrt().to(device)
 # sigma=(torch.abs(max_bound-min_bound))
 # encoder=HashEncoder(N_min=16,N_max=2**10,L=L,F=F,T=2**16,dim=3,mu=mu,sigma=sigma)
 # encoder=HashEncoder(N_min=16,N_max=2**19,L=L,F=F,T=2**19,dim=3,mu=mu,sigma=sigma)
-encoder=HashEncoder(N_min=16,N_max=2048,L=L,F=F,T=2**19,dim=3,mu=mu,sigma=sigma)
+encoder=HashEncoder(N_min=16,N_max=2048,L=L,F=F,T=2**16,dim=3,mu=mu,sigma=sigma)
 # encoder=MultiResHashGrid(3,log2_hashmap_size=19,finest_resolution=2048,mu=mu,sigma=sigma)
 dir_encoder=PositionalEncoder(d_model=3,num_freq=num_freq)
-VolumeRenderer=Volume_Renderer(H=H,W=W,K=K,near=torch.as_tensor(2.),far=torch.as_tensor(6.),device=device,Pos_encode=encoder,Dir_encode=dir_encoder,max_dim=2**10,sigma_val=sigma,mu=mu)
-
-nerf=torch.nn.DataParallel(MLP_3D(num_sig=2,num_col=2,L=L,F=F,d_view=3*num_freq*2))
+var_model=None
+if args.use_sdf is True:
+    var_model=VarModel()
+    var_model=var_model.to(device)
+VolumeRenderer=Volume_Renderer(H=H,W=W,K=K,near=torch.as_tensor(2.),far=torch.as_tensor(6.),device=device,Pos_encode=encoder,Dir_encode=dir_encoder,max_dim=2**10,sigma_val=sigma,mu=mu,use_sdf=args.use_sdf,var_model=var_model)
+nerf=torch.nn.DataParallel(MLP_3D(num_sig=2,num_col=2,L=L,F=F,d_view=3*num_freq*2,max_bound=max_bound,min_bound=min_bound))
 # if args.load is True:
 if args.load is True:
     nerf.load_state_dict(torch.load('Nerf_hash_good.pth'))
@@ -131,6 +136,13 @@ scheduler_MLP = torch.optim.lr_scheduler.OneCycleLR(optimizer_MLP,
                        steps_per_epoch = len(train_loader_nerf)*80, # The number of steps per epoch to train for.
                        epochs = num_epoch, # The number of epochs to train for.
                        anneal_strategy = 'cos') 
+if args.use_sdf is True:
+    optimizer_var=torch.optim.AdamW(var_model.parameters(),lr=0.01)
+    scheduler_var = torch.optim.lr_scheduler.OneCycleLR(optimizer_var, 
+                        max_lr = 5e-2, # Upper learning rate boundaries in the cycle for each parameter group
+                        steps_per_epoch = len(train_loader_nerf)*80, # The number of steps per epoch to train for.
+                        epochs = num_epoch, # The number of epochs to train for.
+                        anneal_strategy = 'cos')
 # scheduler_MLP= torch.optim.lr_scheduler.CyclicLR(optimizer_MLP, 
 #                      base_lr = 0.01, # Initial learning rate which is the lower boundary in the cycle for each parameter group
 #                      max_lr = 0.1, # Upper learning rate boundaries in the cycle for each parameter group
@@ -183,8 +195,10 @@ for epoch in range(num_epoch):
                 # C=vol_render(nerf,ray_d,ray_o,near=2.,far=6.,num_samples=32,Pos_encode=encoder,Dir_encode=dir_encoder)
             with torch.cuda.amp.autocast():
                 t11=time.time()
-                Cr,Cf=VolumeRenderer.vol_render(nerf,ray_d,ray_o,num_samples=num_samples,update_mask=update_mask,dir_norm=dir_norm,hierarchical=False)
+                Cr,Cf,norm=VolumeRenderer.vol_render(nerf,ray_d,ray_o,num_samples=num_samples,update_mask=update_mask,dir_norm=dir_norm,hierarchical=args.hierarchical)
                 loss=criterion(Cr,gt)+criterion(Cf,gt)#/len(train_loader)
+                if args.use_sdf is True:
+                    loss+=0.1*eikonal_loss(norm)
                 t11=time.time()-t11
             scaler.scale(loss).backward()
             scaler.step(optimizer_embed)
@@ -195,6 +209,10 @@ for epoch in range(num_epoch):
             # scheduler_MLP.step()
             optimizer_MLP.zero_grad(set_to_none=True)
             optimizer_embed.zero_grad(set_to_none=True)
+            if args.use_sdf is True:
+                scaler.step(optimizer_var)
+                optimizer_var.zero_grad(set_to_none=True)
+                # scheduler_var.step()
             scaler.update()
             # print("time:",t11)
                 # Color.append(C)
@@ -256,7 +274,7 @@ for epoch in range(num_epoch):
                         ray_d=ray_d.to(device)
                         dir_norm=dir_norm.to(device)
                         print(ray_o.shape,ray_d.shape,dir_norm.shape)
-                        _,C=VolumeRenderer.vol_render(nerf,ray_d,ray_o,num_samples=num_samples,update_mask=True,dir_norm=dir_norm,hierarchical=False)
+                        _,C,_=VolumeRenderer.vol_render(nerf,ray_d,ray_o,num_samples=num_samples,update_mask=True,dir_norm=dir_norm,hierarchical=args.hierarchical)
                         pred[prev_len:prev_len+C.shape[0]]=C
                         prev_len+=C.shape[0]
                         print("C.shape!!",C.shape[0])
