@@ -73,7 +73,7 @@ K[0,0]=train_data.focal1
 K[1,1]=train_data.focal2
 K[0,2]=train_data.cx
 K[1,2]=train_data.cy
-H,W=train_data.H,train_data.W
+H,W=int(train_data.H),int(train_data.W)
 
 pth_test='data/lego/transforms_tmp.json'
 test_data=NeRF_DATA(json_path=pth_test)

@@ -70,7 +70,7 @@ K[0,0]=train_data.focal1
 K[1,1]=train_data.focal2
 K[0,2]=train_data.cx
 K[1,2]=train_data.cy
-H,W=train_data.H,train_data.W
+H,W=int(train_data.H),int(train_data.W)
 rays_o_list=[]
 rays_d_list=[]
 dir_norm_list=[]
@@ -112,7 +112,7 @@ print("T:",T)
 near=torch.tensor(args.near)
 far=torch.tensor(args.far)
 max_bound,min_bound=find_bounding_box(train_loader_bounds,near=near,far=far,K=K)
-np.save('bounds.npy',torch.stack([min_bound,max_bound]).numpy())
+np.save('bounds_model.npy',torch.stack([min_bound,max_bound]).numpy())
 print("BOUNDING BOX:",max_bound,min_bound)
 mu=min_bound.to(device)
 
@@ -186,6 +186,9 @@ n_imgs=3
 num_samples=args.num_samples
 # NOTE Mixed Precision Scaler Here
 p=0
+iters=len(train_loader)//100 # 100 is the number of images written
+count_iter=0
+print("ITERS PER IMAGE:",iters)
 scaler=torch.cuda.amp.GradScaler()
 for epoch in range(num_epoch):
     pbar= tqdm(enumerate(train_loader),desc=f"Train:{i}:{loss}",total=len(train_loader))
@@ -264,7 +267,9 @@ for epoch in range(num_epoch):
                 if key==ord('q'):
                     exit(0)
         prev_len=0
-        if write_img==True and int(100*i/len(train_loader))%1==0 and np.ceil(100*i/len(train_loader))==np.floor(100*i/len(train_loader)):
+        # if write_img==True and int(100*i/len(train_loader))%1==0 and np.ceil(100*i/len(train_loader))==np.floor(100*i/len(train_loader)):
+        if write_img==True and count_iter==iters:
+            count_iter=0
             with torch.no_grad():
                 pred=torch.zeros(H*W,3,device=device)
                 print("!!!!WRITING!!!!")
@@ -294,7 +299,7 @@ for epoch in range(num_epoch):
                 torch.save(nerf.state_dict(),f'{args.model_name}_Nerf_hash.pth')
                 torch.save(encoder.state_dict(),f'{args.model_name}_encoder_hash.pth')
         torch.cuda.empty_cache()
-
+        count_iter+=1
 
     t3=time.time()-t3
     # print("time_3",time.time()-t1)

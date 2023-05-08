@@ -1,0 +1,5 @@
+segmentation:
+  input: ./data/body/images
+  output: ./data/body/SegmentedImages
+  h: 1280 
+  w: 720
