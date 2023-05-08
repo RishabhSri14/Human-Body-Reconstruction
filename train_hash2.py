@@ -13,8 +13,10 @@ from tqdm import tqdm
 import time
 import argparse
 from dataset import NeRF_DATA
+from dataset_new import NeRF_DATA_NEW
 from helper import *
 from tmp_encoder import *
+import os
 parser = argparse.ArgumentParser(description='Train Hashing')
 parser.add_argument('--display',action='store_true',help='Display the output')
 parser.add_argument('--compile',action='store_true',help='Use torch.compile(), might speed up')
@@ -33,6 +35,9 @@ parser.add_argument('--hierarchical',action='store_true',help='Use hierarchical 
 parser.add_argument('--max_res',type=float,default=2048,help='Max resolution of the grid')
 parser.add_argument('--hash_size',type=float,default=16,help='Log Size of the hash table')
 parser.add_argument("--model_name",type=str,default='default',help='Name of saved model')
+parser.add_argument("--data_path",type=str,default=None,help='Path to data')
+parser.add_argument("--ckpt_name",type=str,default='N_2048_T_16',help='Name of checkpoint')
+
 # print(datacube.shape)
 args=parser.parse_args()
 device='cuda' if torch.cuda.is_available() else 'cpu'
@@ -42,8 +47,21 @@ num_freq=4
 
 num_epoch=args.num_epochs
 #################Train DataLoader#####################
-pth_train='data/lego/transforms_train.json'
-train_data=NeRF_DATA(json_path=pth_train)
+if args.data_path is None:
+    pth_train_dir='data/lego/'
+    pth_test_dir='data/lego/'
+else:
+    pth_train_dir=args.data_path
+    pth_test_dir=args.data_path
+pth_train=os.path.join(pth_train_dir,'transforms_train.json')
+pth_test=os.path.join(pth_test_dir,"transforms_tmp.json")
+if args.data_path is None:
+    train_data=NeRF_DATA(json_path=pth_train)
+    test_data=NeRF_DATA(json_path=pth_test)
+else:
+    train_data=NeRF_DATA_NEW(json_path=pth_train)
+    test_data=NeRF_DATA_NEW(json_path=pth_test)
+
 train_loader_bounds=torch.utils.data.DataLoader(train_data,batch_size=2,shuffle=True)
 train_loader_nerf=torch.utils.data.DataLoader(train_data,batch_size=50,shuffle=True)
 K=torch.from_numpy(np.array([[1,0,0],[0,1,0],[0,0,1]]))
@@ -80,8 +98,7 @@ train_loader=torch.utils.data.DataLoader(torch.utils.data.TensorDataset(rays_o,r
 #     pass
 print("SHAPES:",rays_o.shape,rays_d.shape,dir_norms.shape)
 
-pth_test='data/lego/transforms_tmp.json'
-test_data=NeRF_DATA(json_path=pth_test)
+
 test_loader_nerf=torch.utils.data.DataLoader(test_data,batch_size=1,shuffle=False,num_workers=0,pin_memory=False)
 
 ######################################################
@@ -95,6 +112,7 @@ print("T:",T)
 near=torch.tensor(args.near)
 far=torch.tensor(args.far)
 max_bound,min_bound=find_bounding_box(train_loader_bounds,near=near,far=far,K=K)
+np.save('bounds.npy',torch.stack([min_bound,max_bound]).numpy())
 print("BOUNDING BOX:",max_bound,min_bound)
 mu=min_bound.to(device)
 
@@ -109,8 +127,10 @@ VolumeRenderer=Volume_Renderer(H=H,W=W,K=K,near=near,far=far,device=device,Pos_e
 nerf=torch.nn.DataParallel(MLP_3D(num_sig=2,num_col=2,L=L,F=F,d_view=3*num_freq*2,max_bound=max_bound,min_bound=min_bound))
 # if args.load is True:
 if args.load is True:
-    nerf.load_state_dict(torch.load('Nerf_hash.pth'))
-    encoder.load_state_dict(torch.load('encoder_hash.pth'))
+    nerf_ckpt=args.ckpt_name+'_Nerf_hash.pth'
+    encoder_ckpt=args.ckpt_name+'_encoder_hash.pth'
+    nerf.load_state_dict(torch.load(nerf_ckpt))
+    encoder.load_state_dict(torch.load(encoder_ckpt))
 
 nerf=nerf.to(device)
 encoder=encoder.to(device)
