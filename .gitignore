@@ -5,7 +5,7 @@
 /data
 /results
 /__pycache__
-/*.pth
+*.pth
 *.Identifier
 Nerf.txt
 *.npy

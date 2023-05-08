@@ -28,6 +28,6 @@ SRC_CODE_DIR=/home2/solid/CV-Project
 cd $SRC_CODE_DIR
 conda init bash
 eval "$(conda shell.bash hook)"
-conda activate depref
+conda activate Nerf
 
-python train_hash.py --write --num_epochs 100
+python train_hash.py --write --num_epochs 2 --update_rate 1 --num_samples 32
