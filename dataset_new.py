@@ -21,13 +21,13 @@ class NeRF_DATA(Dataset):
         self.image_transforms = transforms
         filename = self.path[:self.path.rfind('/')]+self.dataset[0]['file_path'][self.dataset[0]['file_path'].find('.')+1:]+'.png'
 
-        self.H,self.W,_=cv2.imread(filename).shape
+        self.H,self.W=self.data['h'],self.data['w']
         # print('\n\n', self.image_transforms, '\n')
-        focal=self.W/(2*torch.tan(self.camera_angle_x/2))
-        self.focal1=focal
-        self.focal2=focal
-        self.cx=self.W/2
-        self.cy=self.H/2
+        self.focal1=self.data['f1_x']
+        self.focal2=self.data['f1_y']
+        self.cx=self.data['cx']
+        self.cy=self.data['cy']
+   
     def __len__(self):
         return len(self.dataset)
 
