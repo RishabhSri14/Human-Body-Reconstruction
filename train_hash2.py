@@ -30,7 +30,9 @@ parser.add_argument('--far',type=float,default=6.0,help='Far point')
 parser.add_argument('--plot_grads',action='store_true',help='Plot the gradients after each iteration')
 parser.add_argument('--use_sdf',action='store_true',help='Use sdf formulation while training')
 parser.add_argument('--hierarchical',action='store_true',help='Use hierarchical sampling')
-
+parser.add_argument('--max_res',type=float,default=2048,help='Max resolution of the grid')
+parser.add_argument('--hash_size',type=float,default=16,help='Log Size of the hash table')
+parser.add_argument("--model_name",type=str,default='default',help='Name of saved model')
 # print(datacube.shape)
 args=parser.parse_args()
 device='cuda' if torch.cuda.is_available() else 'cpu'
@@ -44,13 +46,12 @@ pth_train='data/lego/transforms_train.json'
 train_data=NeRF_DATA(json_path=pth_train)
 train_loader_bounds=torch.utils.data.DataLoader(train_data,batch_size=2,shuffle=True)
 train_loader_nerf=torch.utils.data.DataLoader(train_data,batch_size=50,shuffle=True)
-train_data.focal
 K=torch.from_numpy(np.array([[1,0,0],[0,1,0],[0,0,1]]))
 
-K[0,0]=train_data.focal
-K[1,1]=train_data.focal
-K[0,2]=train_data.W/2
-K[1,2]=train_data.H/2
+K[0,0]=train_data.focal1
+K[1,1]=train_data.focal2
+K[0,2]=train_data.cx
+K[1,2]=train_data.cy
 H,W=train_data.H,train_data.W
 rays_o_list=[]
 rays_d_list=[]
@@ -87,6 +88,9 @@ test_loader_nerf=torch.utils.data.DataLoader(test_data,batch_size=1,shuffle=Fals
 
 L=16
 F=2
+N_max=args.max_res
+T=int(2**args.hash_size)
+print("T:",T)
 # max_bound,min_bound=find_bounding_box2(train_loader,near=torch.as_tensor(2.0),far=torch.as_tensor(6.0),K=K)
 near=torch.tensor(args.near)
 far=torch.tensor(args.far)
@@ -95,7 +99,7 @@ print("BOUNDING BOX:",max_bound,min_bound)
 mu=min_bound.to(device)
 
 sigma=((max_bound-min_bound)**2).sum().sqrt().to(device)
-encoder=HashEncoder(N_min=16,N_max=2048,L=L,F=F,T=2**16,dim=3,mu=mu,sigma=sigma)
+encoder=HashEncoder(N_min=16,N_max=N_max,L=L,F=F,T=T,dim=3,mu=mu,sigma=sigma)
 dir_encoder=PositionalEncoder(d_model=3,num_freq=num_freq)
 var_model=None
 if args.use_sdf is True:
@@ -114,20 +118,29 @@ dir_encoder=dir_encoder.to(device)
 if args.compile is True:
     nerf=torch.compile(nerf,mode='reduce-overhead')
 
-optimizer_embed=torch.optim.Adam(list(encoder.Embedding_list.parameters()),lr=0.01)
-optimizer_MLP=torch.optim.AdamW(nerf.parameters(),lr=0.01)
+optimizer_embed=torch.optim.Adam(list(encoder.Embedding_list.parameters()),lr=0.05)
+optimizer_MLP=torch.optim.AdamW(nerf.parameters(),lr=0.005)
 criterion=torch.nn.HuberLoss(reduction='mean')
 
-scheduler_embed = torch.optim.lr_scheduler.OneCycleLR(optimizer_embed, 
-                    max_lr = 5e-2, # Upper learning rate boundaries in the cycle for each parameter group
-                    steps_per_epoch = len(train_loader), # The number of steps per epoch to train for.
-                    epochs = num_epoch, # The number of epochs to train for.
-                    anneal_strategy = 'cos') 
-scheduler_MLP = torch.optim.lr_scheduler.OneCycleLR(optimizer_MLP, 
-                       max_lr = 5e-2, # Upper learning rate boundaries in the cycle for each parameter group
-                       steps_per_epoch = len(train_loader), # The number of steps per epoch to train for.
-                       epochs = num_epoch, # The number of epochs to train for.
-                       anneal_strategy = 'cos') 
+# scheduler_embed = torch.optim.lr_scheduler.OneCycleLR(optimizer_embed, 
+#                     max_lr = 1e-2, # Upper learning rate boundaries in the cycle for each parameter group
+#                     steps_per_epoch = len(train_loader), # The number of steps per epoch to train for.
+#                     epochs = num_epoch, # The number of epochs to train for.
+#                     anneal_strategy = 'cos') 
+# scheduler_MLP = torch.optim.lr_scheduler.OneCycleLR(optimizer_MLP, 
+#                        max_lr = 1e-2, # Upper learning rate boundaries in the cycle for each parameter group
+#                        steps_per_epoch = len(train_loader), # The number of steps per epoch to train for.
+#                        epochs = num_epoch, # The number of epochs to train for.
+#                        anneal_strategy = 'cos') 
+
+scheduler_embed = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer_embed,
+                              T_max = num_epoch*len(train_loader), # Maximum number of iterations.
+                             eta_min = 1e-4)
+
+scheduler_MLP = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer_MLP,
+                                T_max = num_epoch*len(train_loader), # Maximum number of iterations.
+                                eta_min = 1e-4)
+
 if args.use_sdf is True:
     optimizer_var=torch.optim.AdamW(var_model.parameters(),lr=0.01)
     scheduler_var = torch.optim.lr_scheduler.OneCycleLR(optimizer_var, 
@@ -258,8 +271,8 @@ for epoch in range(num_epoch):
                 img_np=img.detach().cpu().numpy()
                 cv2.imwrite(f'./results/hash_big_diff{epoch}_{i}.png',((img_np[...,::-1]-img_np.min())/(img_np.max()-img_np.min())*255).astype(np.uint8))
                 # plt.imsave(f'./results/{i}.png',img_out)
-                torch.save(nerf.state_dict(),'Nerf_hash.pth')
-                torch.save(encoder.state_dict(),'encoder_hash.pth')
+                torch.save(nerf.state_dict(),f'{args.model_name}_Nerf_hash.pth')
+                torch.save(encoder.state_dict(),f'{args.model_name}_encoder_hash.pth')
         torch.cuda.empty_cache()
 
 

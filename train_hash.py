@@ -69,10 +69,10 @@ train_loader_nerf=torch.utils.data.DataLoader(train_data,batch_size=args.num_img
 train_data.focal
 K=torch.from_numpy(np.array([[1,0,0],[0,1,0],[0,0,1]]))
 
-K[0,0]=train_data.focal
-K[1,1]=train_data.focal
-K[0,2]=train_data.W/2
-K[1,2]=train_data.H/2
+K[0,0]=train_data.focal1
+K[1,1]=train_data.focal2
+K[0,2]=train_data.cx
+K[1,2]=train_data.cy
 H,W=train_data.H,train_data.W
 
 pth_test='data/lego/transforms_tmp.json'
