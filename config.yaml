@@ -1,0 +1,5 @@
+segmentation:
+  input: ./PeopleImages
+  output: ./SegmentedImages
+  h: 512 
+  w: 512
