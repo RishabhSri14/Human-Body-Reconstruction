@@ -1,5 +1,5 @@
 # NERF with Hash Encoding (+ extra)
-
+This Repo contains an implementation of NeRF, with the option to use hash-encoding, using a custom-dataset and to generate a 3D mesh out of the Nerf 3D scene.
 - Install Colmap (If custom dataset is needed)
 - Create an environment from given `*.yml` file
 - Install `Segment-anything`:
